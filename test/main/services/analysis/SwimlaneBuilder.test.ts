@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildSwimlane } from '../../../../src/main/services/analysis/SwimlaneBuilder';
+import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
 import type {
   Chunk,
   ParsedMessage,
@@ -82,6 +83,28 @@ function segmentTypes(model: ReturnType<typeof buildSwimlane>): string[] {
 }
 
 describe('buildSwimlane', () => {
+  it('stamps the projection and keeps every serialized parent interval inside its axis', () => {
+    const model = buildSwimlane(
+      [],
+      [process('axis-child', -2, 6)],
+      [message('axis-start', 0), message('axis-end', 4, { type: 'system' })]
+    );
+    const serialized = JSON.parse(JSON.stringify(model)) as typeof model;
+    const axisStart = new Date(serialized.startTime).getTime();
+    const axisEnd = new Date(serialized.endTime).getTime();
+
+    expect(model.schemaVersion).toBe(SWIMLANE_SCHEMA_VERSION);
+    expect(serialized.schemaVersion).toBe(SWIMLANE_SCHEMA_VERSION);
+    expect(serialized.durationMs).toBe(axisEnd - axisStart);
+    for (const segment of serialized.parentSegments) {
+      const start = new Date(segment.startTime).getTime();
+      const end = new Date(segment.endTime).getTime();
+      expect(start).toBeGreaterThanOrEqual(axisStart);
+      expect(end).toBeLessThanOrEqual(axisEnd);
+      expect(segment.durationMs).toBe(end - start);
+    }
+  });
+
   it('projects exact parent and existing-card child targets without timing fallbacks', () => {
     const parentMessage = message('owned-work', 0, {
       requestId: 'owned-request',

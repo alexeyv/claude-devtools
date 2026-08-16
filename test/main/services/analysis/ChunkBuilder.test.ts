@@ -542,6 +542,7 @@ describe('ChunkBuilder', () => {
       const serialized = JSON.parse(
         JSON.stringify(builder.buildSessionDetail(session, messages, []).swimlane)
       ) as {
+        schemaVersion: number;
         evidence: Array<{
           durationMs: number;
           metrics?: { inputTokens: number; outputTokens: number };
@@ -552,6 +553,7 @@ describe('ChunkBuilder', () => {
         }>;
       };
 
+      expect(serialized.schemaVersion).toBe(1);
       expect(serialized.evidence.find((evidence) => evidence.toolUseId === 'read-1')).toMatchObject(
         {
           type: 'tool-execution',

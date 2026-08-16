@@ -73,6 +73,9 @@ export interface Process {
 // Swimlane Projection Types
 // =============================================================================
 
+/** Current IPC schema for the evidence-backed swimlane projection. */
+export const SWIMLANE_SCHEMA_VERSION = 1 as const;
+
 /** Evidence-based classification for every interval on the parent lane. */
 export type SwimlaneSegmentType =
   | 'model-response'
@@ -148,7 +151,7 @@ export interface SwimlaneChildActivation {
   startTime: Date;
   endTime: Date;
   durationMs: number;
-  metrics: SessionMetrics;
+  metrics?: SessionMetrics;
   /** Existing root-session SubagentItem destination, when one is known exactly. */
   target?: SwimlaneNavigationTarget;
 }
@@ -164,6 +167,7 @@ export interface SwimlaneChildRow {
 
 /** Pure wall-clock projection used by the session swimlane renderer. */
 export interface SwimlaneModel {
+  schemaVersion: typeof SWIMLANE_SCHEMA_VERSION;
   startTime: Date;
   endTime: Date;
   durationMs: number;

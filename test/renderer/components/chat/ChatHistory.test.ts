@@ -191,6 +191,7 @@ function makeSwimlaneModel(id = 'default'): SwimlaneModel {
   const startTime = new Date('2026-08-16T12:00:00Z');
   const endTime = new Date('2026-08-16T12:00:01Z');
   return {
+    schemaVersion: 1,
     startTime,
     endTime,
     durationMs: 1000,

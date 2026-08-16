@@ -5,6 +5,7 @@ import {
   type ParsedMessage,
   type Process,
   type SessionMetrics,
+  SWIMLANE_SCHEMA_VERSION,
   type SwimlaneChildRow,
   type SwimlaneEvidenceInterval,
   type SwimlaneHitlMark,
@@ -900,6 +901,7 @@ export function buildSwimlane(
   );
 
   return {
+    schemaVersion: SWIMLANE_SCHEMA_VERSION,
     startTime: new Date(axisStart),
     endTime: new Date(axisEnd),
     durationMs: axisEnd - axisStart,

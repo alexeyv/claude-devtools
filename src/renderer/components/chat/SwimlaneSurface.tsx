@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 
 import { formatDuration } from '@renderer/utils/formatters';
+import { SWIMLANE_SCHEMA_VERSION } from '@shared/types';
 
 import type {
   SessionMetrics,
@@ -24,6 +25,14 @@ const TOOLTIP_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 const MIN_HITL_TICK_GAP = 3;
 const SUPPRESSED_DETAIL_LIMIT = 50;
+const EVIDENCE_TYPES = [
+  'assistant-output',
+  'model-response',
+  'tool-execution',
+  'child-wait',
+  'human-wait',
+] as const;
+const PARENT_TYPES = [...EVIDENCE_TYPES, 'unattributed'] as const;
 
 interface SwimlaneSurfaceProps {
   swimlane: SwimlaneModel;
@@ -67,6 +76,286 @@ interface SwimlaneIntervalProps {
   tooltipId: string;
   dataSegmentType?: string;
   inlineLabel?: string;
+}
+
+type RuntimeRecord = Record<string, unknown>;
+
+function runtimeRecord(value: unknown): RuntimeRecord | undefined {
+  return typeof value === 'object' && value !== null ? (value as RuntimeRecord) : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function runtimeTimestamp(value: unknown): number | undefined {
+  if (!(value instanceof Date) && typeof value !== 'string' && typeof value !== 'number') {
+    return undefined;
+  }
+  const normalized = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(normalized) ? normalized : undefined;
+}
+
+function runtimeMetrics(value: unknown): SessionMetrics | undefined {
+  const candidate = runtimeRecord(value);
+  if (!candidate) return undefined;
+  for (const key of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens']) {
+    const tokenCount = finiteNumber(candidate[key]);
+    if (tokenCount === undefined || !Number.isInteger(tokenCount) || tokenCount < 0)
+      return undefined;
+  }
+  return candidate as unknown as SessionMetrics;
+}
+
+function runtimeTarget(value: unknown): SwimlaneNavigationTarget | undefined {
+  const candidate = runtimeRecord(value);
+  if (!candidate) return undefined;
+  const groupId = runtimeNonblankString(candidate.groupId);
+  if (candidate.kind === 'turn' && groupId) {
+    return { kind: 'turn', groupId };
+  }
+  const processId = runtimeNonblankString(candidate.processId);
+  if (candidate.kind === 'subagent' && groupId && processId) {
+    const spawnId = runtimeNonblankString(candidate.spawnId);
+    return {
+      kind: 'subagent',
+      groupId,
+      processId,
+      ...(spawnId ? { spawnId } : {}),
+    };
+  }
+  return undefined;
+}
+
+function runtimeString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function runtimeNonblankString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function uniqueRuntimeId(value: unknown, fallback: string, usedIds: Set<string>): string {
+  const base = runtimeNonblankString(value) ?? fallback;
+  let id = base;
+  let suffix = 2;
+  while (usedIds.has(id)) id = `${base}-${suffix++}`;
+  usedIds.add(id);
+  return id;
+}
+
+function clippedInterval(
+  candidate: RuntimeRecord,
+  axisStart: number,
+  axisEnd: number
+): { durationMs: number; endTime: Date; startTime: Date } | undefined {
+  const rawStart = runtimeTimestamp(candidate.startTime);
+  const rawEnd = runtimeTimestamp(candidate.endTime);
+  if (rawStart === undefined || rawEnd === undefined || rawEnd < rawStart) {
+    return undefined;
+  }
+  if (rawStart === rawEnd) {
+    return rawStart >= axisStart && rawStart <= axisEnd
+      ? { startTime: new Date(rawStart), endTime: new Date(rawEnd), durationMs: 0 }
+      : undefined;
+  }
+  if (axisEnd <= axisStart) return undefined;
+  const start = Math.max(axisStart, rawStart);
+  const end = Math.min(axisEnd, rawEnd);
+  if (end <= start) return undefined;
+  return { startTime: new Date(start), endTime: new Date(end), durationMs: end - start };
+}
+
+function isParentType(value: unknown): value is SwimlaneParentSegment['type'] {
+  return typeof value === 'string' && (PARENT_TYPES as readonly string[]).includes(value);
+}
+
+function isEvidenceType(value: unknown): value is SwimlaneModel['evidence'][number]['type'] {
+  return typeof value === 'string' && (EVIDENCE_TYPES as readonly string[]).includes(value);
+}
+
+function normalizedParentType(value: unknown, legacy: boolean): SwimlaneParentSegment['type'] {
+  if (legacy) return value === 'work' ? 'assistant-output' : 'unattributed';
+  return isParentType(value) ? value : 'unattributed';
+}
+
+/** Convert stale or partial IPC data into the renderer's current, safe projection. */
+function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
+  const model = runtimeRecord(swimlaneValue) ?? {};
+  const rawStart = runtimeTimestamp(model.startTime);
+  const rawEnd = runtimeTimestamp(model.endTime);
+  const axisStart = rawStart ?? rawEnd ?? 0;
+  const axisEnd =
+    rawStart !== undefined && rawEnd !== undefined && rawEnd >= rawStart ? rawEnd : axisStart;
+  const schemaVersion = finiteNumber(model.schemaVersion);
+  const legacy =
+    schemaVersion === undefined || !Number.isInteger(schemaVersion) || schemaVersion <= 0;
+  const parentIds = new Set<string>();
+  const evidenceIds = new Set<string>();
+  const markIds = new Set<string>();
+  const rowIds = new Set<string>();
+  const activationIds = new Set<string>();
+  const parentSegments = (Array.isArray(model.parentSegments) ? model.parentSegments : []).flatMap(
+    (value, index): SwimlaneParentSegment[] => {
+      const candidate = runtimeRecord(value);
+      if (!candidate) return [];
+      const interval = clippedInterval(candidate, axisStart, axisEnd);
+      if (!interval) return [];
+      const type = normalizedParentType(candidate.type, legacy);
+      const retainLegacyWorkDetails = !legacy || candidate.type === 'work';
+      const metrics = retainLegacyWorkDetails ? runtimeMetrics(candidate.metrics) : undefined;
+      const chunkId = retainLegacyWorkDetails
+        ? runtimeNonblankString(candidate.chunkId)
+        : undefined;
+      const explicitTarget = retainLegacyWorkDetails ? runtimeTarget(candidate.target) : undefined;
+      const target =
+        explicitTarget ??
+        (legacy && candidate.type === 'work' && chunkId
+          ? { kind: 'turn' as const, groupId: chunkId }
+          : undefined);
+      const retainsEvidenceLink =
+        !legacy && isParentType(candidate.type) && type !== 'unattributed';
+      const evidenceId = retainsEvidenceLink
+        ? runtimeNonblankString(candidate.evidenceId)
+        : undefined;
+      return [
+        {
+          id: uniqueRuntimeId(candidate.id, `parent-${index}`, parentIds),
+          type,
+          ...interval,
+          ...(evidenceId ? { evidenceId } : {}),
+          ...(metrics ? { metrics } : {}),
+          ...(retainLegacyWorkDetails && runtimeNonblankString(candidate.requestId)
+            ? { requestId: runtimeNonblankString(candidate.requestId) }
+            : {}),
+          ...(chunkId ? { chunkId } : {}),
+          ...(target ? { target } : {}),
+        },
+      ];
+    }
+  );
+  const evidence = (!legacy && Array.isArray(model.evidence) ? model.evidence : []).flatMap(
+    (value, index): SwimlaneModel['evidence'] => {
+      const candidate = runtimeRecord(value);
+      if (!candidate) return [];
+      const start = runtimeTimestamp(candidate.startTime);
+      const end = runtimeTimestamp(candidate.endTime);
+      if (
+        start === undefined ||
+        end === undefined ||
+        end < start ||
+        !isEvidenceType(candidate.type)
+      ) {
+        return [];
+      }
+      const metrics = runtimeMetrics(candidate.metrics);
+      const target = runtimeTarget(candidate.target);
+      return [
+        {
+          id: uniqueRuntimeId(candidate.id, `evidence-${index}`, evidenceIds),
+          type: candidate.type,
+          startTime: new Date(start),
+          endTime: new Date(end),
+          durationMs: end - start,
+          ...(typeof candidate.requestId === 'string' ? { requestId: candidate.requestId } : {}),
+          ...(typeof candidate.toolUseId === 'string' ? { toolUseId: candidate.toolUseId } : {}),
+          ...(typeof candidate.processId === 'string' ? { processId: candidate.processId } : {}),
+          ...(typeof candidate.startMessageId === 'string'
+            ? { startMessageId: candidate.startMessageId }
+            : {}),
+          ...(typeof candidate.endMessageId === 'string'
+            ? { endMessageId: candidate.endMessageId }
+            : {}),
+          ...(typeof candidate.label === 'string' ? { label: candidate.label } : {}),
+          ...(metrics ? { metrics } : {}),
+          ...(target ? { target } : {}),
+        },
+      ];
+    }
+  );
+  const hitlMarks = (Array.isArray(model.hitlMarks) ? model.hitlMarks : []).flatMap(
+    (value, index): SwimlaneModel['hitlMarks'] => {
+      const candidate = runtimeRecord(value);
+      const markTime = candidate ? runtimeTimestamp(candidate.timestamp) : undefined;
+      const validTypeSourcePair =
+        candidate &&
+        typeof candidate.type === 'string' &&
+        ((['ask', 'answer'].includes(candidate.type) && candidate.source === 'explicit-ask') ||
+          (['resume-start', 'resume'].includes(candidate.type) &&
+            candidate.source === 'linked-resume'));
+      if (
+        !candidate ||
+        markTime === undefined ||
+        !validTypeSourcePair ||
+        markTime < axisStart ||
+        markTime > axisEnd
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: uniqueRuntimeId(candidate.id, `mark-${index}`, markIds),
+          type: candidate.type as SwimlaneModel['hitlMarks'][number]['type'],
+          timestamp: new Date(markTime),
+          source: candidate.source as SwimlaneModel['hitlMarks'][number]['source'],
+          ...(typeof candidate.toolUseId === 'string' ? { toolUseId: candidate.toolUseId } : {}),
+        },
+      ];
+    }
+  );
+  const childRows = (Array.isArray(model.childRows) ? model.childRows : []).flatMap(
+    (rowValue, rowIndex): SwimlaneModel['childRows'] => {
+      const candidate = runtimeRecord(rowValue);
+      if (!candidate) return [];
+      const activations = (
+        Array.isArray(candidate.activations) ? candidate.activations : []
+      ).flatMap(
+        (activationValue, activationIndex): SwimlaneModel['childRows'][number]['activations'] => {
+          const activation = runtimeRecord(activationValue);
+          if (!activation) return [];
+          const interval = clippedInterval(activation, axisStart, axisEnd);
+          if (!interval) return [];
+          const metrics = runtimeMetrics(activation.metrics);
+          const target = runtimeTarget(activation.target);
+          return [
+            {
+              id: uniqueRuntimeId(
+                activation.id,
+                `activation-${rowIndex}-${activationIndex}`,
+                activationIds
+              ),
+              processId:
+                runtimeNonblankString(activation.processId) ??
+                `process-${rowIndex}-${activationIndex}`,
+              ...interval,
+              ...(metrics ? { metrics } : {}),
+              ...(target ? { target } : {}),
+            },
+          ];
+        }
+      );
+      return [
+        {
+          id: uniqueRuntimeId(candidate.id, `child-${rowIndex}`, rowIds),
+          label: runtimeString(candidate.label) ?? `Child ${rowIndex + 1}`,
+          parentRowId: runtimeString(candidate.parentRowId) ?? null,
+          depth: Math.max(0, Math.floor(finiteNumber(candidate.depth) ?? 0)),
+          activations,
+        },
+      ];
+    }
+  );
+
+  return {
+    schemaVersion: SWIMLANE_SCHEMA_VERSION,
+    startTime: new Date(axisStart),
+    endTime: new Date(axisEnd),
+    durationMs: axisEnd - axisStart,
+    evidence,
+    parentSegments,
+    hitlMarks,
+    childRows,
+  };
 }
 
 function timestamp(value: Date | string): number {
@@ -585,15 +874,18 @@ function IntervalTooltip({
   );
 }
 
-const swimlaneModelKeys = new WeakMap<SwimlaneModel, number>();
+const swimlaneModelKeys = new WeakMap<object, number>();
 let nextSwimlaneModelKey = 1;
 
-function swimlaneModelKey(swimlane: SwimlaneModel): number {
+function swimlaneModelKey(swimlane: unknown): string {
+  if (typeof swimlane !== 'object' || swimlane === null) {
+    return `primitive:${typeof swimlane}:${String(swimlane)}`;
+  }
   const existing = swimlaneModelKeys.get(swimlane);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) return `model:${existing}`;
   const key = nextSwimlaneModelKey++;
   swimlaneModelKeys.set(swimlane, key);
-  return key;
+  return `model:${key}`;
 }
 
 const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
@@ -767,8 +1059,16 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                 minHeight: '28px',
               }}
             >
-              <span style={{ left: 0, position: 'absolute', top: '4px' }}>0ms</span>
               <span
+                aria-label="Elapsed start"
+                data-testid="swimlane-axis-start"
+                style={{ left: 0, position: 'absolute', top: '4px' }}
+              >
+                0ms
+              </span>
+              <span
+                aria-label={`Elapsed midpoint ${formatDuration(axisDuration / 2)}`}
+                data-testid="swimlane-axis-midpoint"
                 style={{
                   left: '50%',
                   position: 'absolute',
@@ -778,7 +1078,11 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
               >
                 {formatDuration(axisDuration / 2)}
               </span>
-              <span style={{ position: 'absolute', right: 0, top: '4px' }}>
+              <span
+                aria-label={`Elapsed endpoint ${formatDuration(axisDuration)}`}
+                data-testid="swimlane-axis-endpoint"
+                style={{ position: 'absolute', right: 0, top: '4px' }}
+              >
                 {formatDuration(axisDuration)}
               </span>
             </div>
@@ -1066,10 +1370,13 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   );
 };
 
-export const SwimlaneSurface = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => (
-  <SwimlaneSurfaceContent
-    key={swimlaneModelKey(swimlane)}
-    swimlane={swimlane}
-    onTarget={onTarget}
-  />
-);
+export const SwimlaneSurface = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
+  const normalizedSwimlane = normalizeSwimlaneModel(swimlane);
+  return (
+    <SwimlaneSurfaceContent
+      key={swimlaneModelKey(swimlane)}
+      swimlane={normalizedSwimlane}
+      onTarget={onTarget}
+    />
+  );
+};

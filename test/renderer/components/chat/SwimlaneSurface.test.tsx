@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SwimlaneSurface } from '../../../../src/renderer/components/chat/SwimlaneSurface';
+import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
 
 import type {
   SessionMetrics,
@@ -74,6 +75,7 @@ function mixedModel(): SwimlaneModel {
     outputTokens: 4,
   });
   return {
+    schemaVersion: SWIMLANE_SCHEMA_VERSION,
     startTime: at(0, true),
     endTime: at(10, true),
     durationMs: 10_000,
@@ -275,6 +277,14 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-clock-canvas').style.minWidth).toBe('904px');
     expect(element(host, 'swimlane-parent-row').style.height).toBe('34px');
     expect(element(host, 'swimlane-child-row-child').style.height).toBe('34px');
+    expect(element(host, 'swimlane-axis-midpoint').textContent).toBe('5.0s');
+    expect(element(host, 'swimlane-axis-midpoint').getAttribute('aria-label')).toBe(
+      'Elapsed midpoint 5.0s'
+    );
+    expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('10.0s');
+    expect(element(host, 'swimlane-axis-endpoint').getAttribute('aria-label')).toBe(
+      'Elapsed endpoint 10.0s'
+    );
 
     const work = element(host, 'swimlane-parent-segment-work');
     const childWait = element(host, 'swimlane-parent-segment-child-wait');
@@ -332,6 +342,506 @@ describe('SwimlaneSurface', () => {
       expect(mark.dataset.clockPercentage).toBe(percentage);
       expect(mark.style.left).toBe(`calc(${percentage}% + 0px)`);
     }
+  });
+
+  it('migrates an unversioned legacy projection without trusting legacy wait categories', async () => {
+    const legacyMetrics = metrics({ inputTokens: 12, outputTokens: 3, totalTokens: 15 });
+    const target = { kind: 'turn', groupId: 'legacy-work' } as const;
+    const legacyModel = {
+      startTime: at(0, true),
+      endTime: at(10, true),
+      durationMs: 10_000,
+      parentSegments: [
+        {
+          id: 'legacy-work',
+          type: 'work',
+          startTime: at(0, true),
+          endTime: at(2, true),
+          durationMs: 60_000,
+          metrics: legacyMetrics,
+          chunkId: target.groupId,
+        },
+        {
+          id: 'legacy-hitl',
+          type: 'HITL-wait',
+          startTime: at(2),
+          endTime: at(4),
+          durationMs: 2000,
+        },
+        {
+          id: 'legacy-child',
+          type: 'child-wait',
+          startTime: at(4),
+          endTime: at(6),
+          durationMs: 2000,
+        },
+        {
+          id: 'legacy-idle',
+          type: 'idle',
+          startTime: at(6),
+          endTime: at(10),
+          durationMs: 4000,
+        },
+        {
+          id: 'legacy-zero-work',
+          type: 'work',
+          startTime: at(9),
+          endTime: at(9),
+          durationMs: 50_000,
+          metrics: metrics({ inputTokens: 99 }),
+          chunkId: 'legacy-zero-target',
+        },
+      ],
+    } as unknown as SwimlaneModel;
+    const onTarget = vi.fn();
+    const host = await render(legacyModel, onTarget);
+
+    const work = element(host, 'swimlane-parent-segment-legacy-work');
+    expect(work.dataset.segmentType).toBe('assistant-output');
+    expect(work.getAttribute('aria-label')).toBe('Parent assistant output');
+    expect(work.style.width).toBe('20%');
+    expect(element(host, 'swimlane-parent-segment-legacy-work-duration').textContent).toBe('2.0s');
+    for (const id of ['legacy-hitl', 'legacy-child', 'legacy-idle']) {
+      const segment = element(host, `swimlane-parent-segment-${id}`);
+      expect(segment.dataset.segmentType).toBe('unattributed');
+      expect(segment.getAttribute('aria-label')).toBe('Parent unattributed');
+    }
+
+    await mouseOver(work);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Duration2.0s');
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Input12');
+    await act(async () => work.click());
+    expect(onTarget).toHaveBeenCalledWith(target);
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+    expect(suppressed.textContent).toContain('assistant output — 0ms');
+    expect(suppressed.textContent).toContain('input 99');
+    const suppressedButton = suppressed.querySelector('button');
+    await act(async () => suppressedButton?.click());
+    expect(onTarget).toHaveBeenCalledWith({ kind: 'turn', groupId: 'legacy-zero-target' });
+    expect(document.body.textContent).not.toContain('undefined');
+  });
+
+  it('retains legacy point work metadata on a zero-length axis', async () => {
+    const pointTime = at(5);
+    const legacyModel = {
+      startTime: pointTime,
+      endTime: pointTime,
+      durationMs: 0,
+      parentSegments: [
+        {
+          id: 'legacy-axis-point',
+          type: 'work',
+          startTime: pointTime,
+          endTime: pointTime,
+          durationMs: 60_000,
+          metrics: metrics({ inputTokens: 17 }),
+          chunkId: 'legacy-axis-point-owner',
+        },
+      ],
+    } as unknown as SwimlaneModel;
+    const onTarget = vi.fn();
+    const host = await render(legacyModel, onTarget);
+
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-legacy-axis-point"]')
+    ).toBeNull();
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+    expect(suppressed.textContent).toContain('assistant output — 0ms');
+    expect(suppressed.textContent).toContain('input 17');
+    await act(async () => suppressed.querySelector('button')?.click());
+    expect(onTarget).toHaveBeenCalledWith({
+      kind: 'turn',
+      groupId: 'legacy-axis-point-owner',
+    });
+  });
+
+  it('fails closed for primitive models and missing or invalid axis bounds', async () => {
+    const host = await render(null as unknown as SwimlaneModel);
+    expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('0ms');
+
+    for (const primitive of [42, 'stale', false]) {
+      await rerender(primitive as unknown as SwimlaneModel);
+      expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('0ms');
+    }
+
+    for (const partialAxis of [
+      { startTime: at(0) },
+      { endTime: at(10) },
+      { startTime: 'invalid', endTime: at(10) },
+      { startTime: at(0), endTime: 'invalid' },
+      { startTime: at(10), endTime: at(0) },
+    ]) {
+      await rerender({
+        schemaVersion: 1,
+        ...partialAxis,
+        parentSegments: [],
+      } as unknown as SwimlaneModel);
+      expect(element(host, 'swimlane-axis-midpoint').textContent).toBe('0ms');
+      expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('0ms');
+    }
+  });
+
+  it('treats only positive integer schema versions as current-compatible', async () => {
+    const modelForVersion = (schemaVersion: unknown): SwimlaneModel =>
+      ({
+        schemaVersion,
+        startTime: at(0),
+        endTime: at(10),
+        parentSegments: [{ id: 'versioned-work', type: 'work', startTime: at(0), endTime: at(2) }],
+      }) as unknown as SwimlaneModel;
+    const host = await render(modelForVersion(undefined));
+
+    for (const legacyVersion of [undefined, null, '1', Number.NaN, 1.5, 0, -1]) {
+      await rerender(modelForVersion(legacyVersion));
+      expect(element(host, 'swimlane-parent-segment-versioned-work').dataset.segmentType).toBe(
+        'assistant-output'
+      );
+    }
+
+    await rerender({
+      ...modelForVersion(2),
+      parentSegments: [
+        { id: 'future-child-wait', type: 'child-wait', startTime: at(0), endTime: at(2) },
+      ],
+    } as unknown as SwimlaneModel);
+    expect(element(host, 'swimlane-parent-segment-future-child-wait').dataset.segmentType).toBe(
+      'child-wait'
+    );
+  });
+
+  it('clips parent timestamps to the axis and drops invalid intervals', async () => {
+    const model = mixedModel();
+    model.parentSegments = [
+      {
+        id: 'stale-duration',
+        type: 'assistant-output',
+        startTime: at(1),
+        endTime: at(3),
+        durationMs: 60_000,
+      },
+      {
+        id: 'outside-axis',
+        type: 'tool-execution',
+        startTime: at(-5),
+        endTime: at(15),
+        durationMs: 20_000,
+      },
+      {
+        id: 'reversed',
+        type: 'human-wait',
+        startTime: at(8),
+        endTime: at(7),
+        durationMs: 1000,
+      },
+      {
+        id: 'outside-point',
+        type: 'assistant-output',
+        startTime: at(15),
+        endTime: at(15),
+        durationMs: 0,
+      },
+      {
+        id: 'touching-before-axis',
+        type: 'assistant-output',
+        startTime: at(-5),
+        endTime: at(0),
+        durationMs: 5000,
+      },
+    ];
+    const host = await render(model);
+    const stale = element(host, 'swimlane-parent-segment-stale-duration');
+    const outside = element(host, 'swimlane-parent-segment-outside-axis');
+
+    expect(stale.style.left).toBe('10%');
+    expect(stale.style.width).toBe('20%');
+    expect(element(host, 'swimlane-parent-segment-stale-duration-duration').textContent).toBe(
+      '2.0s'
+    );
+    await mouseOver(stale);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Duration2.0s');
+    await mouseOut(stale);
+
+    expect(outside.style.left).toBe('0%');
+    expect(outside.style.width).toBe('100%');
+    expect(element(host, 'swimlane-parent-segment-outside-axis-duration').textContent).toBe(
+      '10.0s'
+    );
+    await mouseOver(outside);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Duration10.0s');
+    expect(host.querySelector('[data-testid="swimlane-parent-segment-reversed"]')).toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-parent-segment-outside-point"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-touching-before-axis"]')
+    ).toBeNull();
+  });
+
+  it('clips child activations, derives durations, and retains zero-duration metadata honestly', async () => {
+    const model = mixedModel();
+    model.childRows = [
+      {
+        id: 'runtime-child',
+        label: 'Runtime child',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'clipped-child',
+            processId: 'clipped-process',
+            startTime: at(1),
+            endTime: at(3),
+            durationMs: 60_000,
+          },
+          {
+            id: 'outside-child',
+            processId: 'outside-process',
+            startTime: at(-5),
+            endTime: at(15),
+            durationMs: 60_000,
+            metrics: metrics({ inputTokens: 8 }),
+          },
+          {
+            id: 'reversed-child',
+            processId: 'reversed-process',
+            startTime: at(8),
+            endTime: at(7),
+            durationMs: 1000,
+          },
+          {
+            id: 'zero-child',
+            processId: 'zero-process',
+            startTime: at(9),
+            endTime: at(9),
+            durationMs: 50_000,
+            metrics: metrics({ inputTokens: 9 }),
+            target: {
+              kind: 'subagent',
+              groupId: 'zero-owner',
+              processId: 'zero-process',
+            },
+          },
+        ],
+      },
+    ];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const clipped = element(host, 'swimlane-activation-clipped-child');
+    const outside = element(host, 'swimlane-activation-outside-child');
+
+    expect(clipped.style.left).toBe('10%');
+    expect(clipped.style.width).toBe('20%');
+    expect(element(host, 'swimlane-activation-clipped-child-duration').textContent).toBe('2.0s');
+    await mouseOver(clipped);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Duration2.0s');
+    expect(element(document, 'swimlane-tooltip').textContent).not.toContain('Input');
+    await mouseOut(clipped);
+
+    expect(outside.style.width).toBe('100%');
+    expect(element(host, 'swimlane-activation-outside-child-duration').textContent).toBe('10.0s');
+    expect(host.querySelector('[data-testid="swimlane-activation-reversed-child"]')).toBeNull();
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+    expect(suppressed.textContent).toContain('Runtime child activation — 0ms');
+    expect(suppressed.textContent).toContain('input 9');
+    await act(async () => suppressed.querySelector('button')?.click());
+    expect(onTarget).toHaveBeenCalledWith({
+      kind: 'subagent',
+      groupId: 'zero-owner',
+      processId: 'zero-process',
+    });
+  });
+
+  it('keeps only valid in-axis HITL type and source pairs', async () => {
+    const model = mixedModel();
+    model.hitlMarks = [
+      { id: 'valid', type: 'ask', timestamp: at(5), source: 'explicit-ask' },
+      { id: 'wrong-source', type: 'ask', timestamp: at(5), source: 'linked-resume' },
+      { id: 'wrong-resume-source', type: 'resume', timestamp: at(5), source: 'explicit-ask' },
+      {
+        id: 'object-type',
+        type: { toString: () => 'ask' },
+        timestamp: at(5),
+        source: 'explicit-ask',
+      } as unknown as SwimlaneModel['hitlMarks'][number],
+      { id: 'before-axis', type: 'answer', timestamp: at(-1), source: 'explicit-ask' },
+      { id: 'after-axis', type: 'resume', timestamp: at(11), source: 'linked-resume' },
+    ];
+    const host = await render(model);
+
+    expect(element(host, 'swimlane-mark-valid')).toBeTruthy();
+    expect(host.querySelectorAll('[data-testid^="swimlane-mark-"]')).toHaveLength(1);
+  });
+
+  it('omits invalid metrics and blank navigation identifiers', async () => {
+    const model = mixedModel();
+    model.parentSegments = [
+      {
+        id: 'invalid-details',
+        type: 'assistant-output',
+        startTime: at(0),
+        endTime: at(2),
+        durationMs: 2000,
+        metrics: { ...metrics(), inputTokens: 1.5, cacheReadTokens: -1 },
+        target: { kind: 'turn', groupId: '   ' },
+      },
+    ];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const segment = element(host, 'swimlane-parent-segment-invalid-details');
+
+    expect(segment.tagName).toBe('DIV');
+    await mouseOver(segment);
+    expect(element(document, 'swimlane-tooltip').textContent).not.toContain('Input');
+    expect(onTarget).not.toHaveBeenCalled();
+  });
+
+  it('renders future and partial projections with deterministic fallbacks', async () => {
+    const partialModel = {
+      schemaVersion: 99,
+      startTime: at(0),
+      endTime: at(10),
+      parentSegments: [
+        {
+          id: 'future',
+          type: 'future-activity',
+          startTime: at(1),
+          endTime: at(3),
+          evidenceId: 'exact-evidence',
+        },
+        { id: 'missing-type', startTime: at(3), endTime: at(5) },
+        { id: 'invalid', type: 'assistant-output', startTime: 'invalid', endTime: at(7) },
+      ],
+      evidence: [
+        {
+          id: 'exact-evidence',
+          type: 'tool-execution',
+          startTime: at(1),
+          endTime: at(1.005),
+          durationMs: 60_000,
+          label: 'Exact evidence',
+          metrics: metrics({
+            inputTokens: 1,
+            cacheReadTokens: 2,
+            cacheCreationTokens: 3,
+            outputTokens: 4,
+          }),
+        },
+        {
+          id: 'invalid-evidence',
+          type: 'future-evidence',
+          startTime: at(1),
+          endTime: at(2),
+          durationMs: 1000,
+        },
+        {
+          id: 'object-evidence',
+          type: { toString: () => 'tool-execution' },
+          startTime: at(2),
+          endTime: at(2.005),
+          durationMs: 5,
+        },
+      ],
+    } as unknown as SwimlaneModel;
+    const host = await render(partialModel);
+
+    expect(element(host, 'swimlane-parent-segment-future').getAttribute('aria-label')).toBe(
+      'Parent unattributed'
+    );
+    expect(element(host, 'swimlane-parent-segment-missing-type').dataset.segmentType).toBe(
+      'unattributed'
+    );
+    expect(host.querySelector('[data-testid="swimlane-parent-segment-invalid"]')).toBeNull();
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+    expect(suppressed.textContent).toContain('tool execution (Exact evidence) — 5ms');
+    expect(suppressed.textContent).toContain('input 1, cache read 2, cache write 3, output 4');
+    expect(document.body.textContent).not.toContain('undefined');
+  });
+
+  it('deduplicates runtime identities deterministically in every rendered collection', async () => {
+    const model = mixedModel();
+    model.parentSegments = [
+      {
+        id: 'duplicate-parent',
+        type: 'assistant-output',
+        startTime: at(0),
+        endTime: at(2),
+        durationMs: 2000,
+      },
+      {
+        id: 'duplicate-parent',
+        type: 'tool-execution',
+        startTime: at(2),
+        endTime: at(4),
+        durationMs: 2000,
+      },
+    ];
+    model.evidence = [
+      {
+        id: 'duplicate-evidence',
+        type: 'tool-execution',
+        startTime: at(5),
+        endTime: at(5.005),
+        durationMs: 5,
+        label: 'Evidence one',
+      },
+      {
+        id: 'duplicate-evidence',
+        type: 'model-response',
+        startTime: at(6),
+        endTime: at(6.005),
+        durationMs: 5,
+        label: 'Evidence two',
+      },
+    ];
+    model.hitlMarks = [
+      { id: 'duplicate-mark', type: 'ask', timestamp: at(4), source: 'explicit-ask' },
+      { id: 'duplicate-mark', type: 'resume', timestamp: at(4), source: 'linked-resume' },
+    ];
+    model.childRows = [
+      {
+        id: 'duplicate-row',
+        label: 'Row one',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'duplicate-activation',
+            processId: 'process-one',
+            startTime: at(0),
+            endTime: at(2),
+            durationMs: 2000,
+            metrics: metrics(),
+          },
+        ],
+      },
+      {
+        id: 'duplicate-row',
+        label: 'Row two',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'duplicate-activation',
+            processId: 'process-two',
+            startTime: at(2),
+            endTime: at(4),
+            durationMs: 2000,
+            metrics: metrics(),
+          },
+        ],
+      },
+    ];
+    const host = await render(model);
+
+    expect(element(host, 'swimlane-parent-segment-duplicate-parent')).toBeTruthy();
+    expect(element(host, 'swimlane-parent-segment-duplicate-parent-2')).toBeTruthy();
+    expect(element(host, 'swimlane-mark-duplicate-mark')).toBeTruthy();
+    expect(element(host, 'swimlane-mark-duplicate-mark-2')).toBeTruthy();
+    expect(element(host, 'swimlane-child-row-duplicate-row')).toBeTruthy();
+    expect(element(host, 'swimlane-child-row-duplicate-row-2')).toBeTruthy();
+    expect(element(host, 'swimlane-activation-duplicate-activation')).toBeTruthy();
+    expect(element(host, 'swimlane-activation-duplicate-activation-2')).toBeTruthy();
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+    expect(suppressed.textContent).toContain('Evidence one');
+    expect(suppressed.textContent).toContain('Evidence two');
   });
 
   it('suppresses duration labels by rendered width and reveals them after a real clock resize', async () => {
@@ -564,6 +1074,7 @@ describe('SwimlaneSurface', () => {
       totalTokens: 10,
     });
     const model: SwimlaneModel = {
+      schemaVersion: SWIMLANE_SCHEMA_VERSION,
       startTime: at(0),
       endTime: at(10),
       durationMs: 10_000,
@@ -573,11 +1084,18 @@ describe('SwimlaneSurface', () => {
           type: 'tool-execution',
           startTime: at(0),
           endTime: at(0.005),
-          durationMs: 5,
+          durationMs: 60_000,
           toolUseId: 'tool-5ms',
           label: 'Read',
           metrics: instantMetrics,
           target: { kind: 'turn', groupId: 'tool-owner' },
+        },
+        {
+          id: 'invalid-current-evidence',
+          type: 'model-response',
+          startTime: new Date(Number.NaN),
+          endTime: at(1),
+          durationMs: 1000,
         },
       ],
       parentSegments: [],
@@ -615,6 +1133,7 @@ describe('SwimlaneSurface', () => {
       '2 hidden evidence intervals'
     );
     expect(suppressed.textContent).toContain('tool execution (Read) — 5ms');
+    expect(suppressed.textContent).toContain('input 1, cache read 2, cache write 3, output 4');
     expect(suppressed.textContent).toContain('Instant child activation — 5ms');
     await act(async () => {
       suppressed.querySelector('summary')?.click();
