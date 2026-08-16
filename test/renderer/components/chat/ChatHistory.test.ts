@@ -420,8 +420,14 @@ describe('ChatHistory swimlane', () => {
     ).not.toBeNull();
     expect(host.querySelector('[data-testid="swimlane-parent-segment-first-tab-work"]')).toBeNull();
     expect(
-      host.querySelector('[data-testid="swimlane-metrics-selected-tab-work"]')?.textContent
-    ).toBe('1.0s · 4 in · 3 cache · 2 write · 1 out');
+      host.querySelector('[data-testid="swimlane-parent-segment-selected-tab-work-duration"]')
+        ?.textContent
+    ).toBe('1.0s');
+    expect(
+      host
+        .querySelector('[data-testid="swimlane-parent-segment-selected-tab-work"]')
+        ?.getAttribute('aria-label')
+    ).toBe('Parent work');
     expect(turnList?.getAttribute('inert')).toBe('');
 
     await click(button(host, 'Swimlane'));
