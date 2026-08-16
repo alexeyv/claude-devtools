@@ -25,13 +25,13 @@ Silent (child-wait, HITL-wait, idle) must never use the work fill.
 
 ## Child bars
 
-Solid bar, `--card-header-bg` / `--card-border` / `--card-text-light`. Lane accent may reuse existing `getSubagentTypeColorSet` / `getTeamColorSet` when the process already has a type or team color. Do not invent per-lane hues.
+One solid bar per **activation** on the child row (`--card-header-bg` / `--card-border` / `--card-text-light`). Continuation gaps stay empty track — do not stretch a single bar from first to last activation. Lane accent may reuse existing `getSubagentTypeColorSet` / `getTeamColorSet` when the process already has a type or team color. Do not invent per-lane hues.
 
-Row label: `Process.description` or `subagentType`, same 60-character truncate as `SubagentItem`. Parent row label: `Parent`. Nested rows indent under their parent.
+Row label: `Process.description` or `subagentType` of the primary process, same 60-character truncate as `SubagentItem`. Parent row label: `Parent`. Nested rows indent under their parent.
 
 ## HITL marks
 
-Vertical ticks on the axis, not bars. Short inferred label next to the tick: `ask`, `resume`, or `checkpoint`. Color `--warning-text`. Do not add certainty words.
+Vertical ticks on the axis, not bars. Short inferred label next to the tick: `ask` or `resume`. Color `--warning-text`. Do not add certainty words.
 
 ## Metrics on bars
 

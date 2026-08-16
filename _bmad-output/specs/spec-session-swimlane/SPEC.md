@@ -23,15 +23,15 @@ A pain: Claude Code sessions that matter — especially BMAD skill runs — are 
 
 - **CAP-2**
   - **intent:** User can see when the parent was producing versus silent on one wall clock spanning the parent and its resolved children.
-  - **success:** Parent work intervals align with assistant and tool-use timestamps. Every silent stretch is drawn and never classified as work. Classification rules live in `interval-classes.md`.
+  - **success:** Parent work is production, not a timestamp and not gap-fill-to-next. Waiting on spawned children is silence, even inside the same AI chunk. Every silent stretch is drawn and never classified as work. Rules live in `interval-classes.md`.
 
 - **CAP-3**
   - **intent:** User can see each spawned Agent/Task child on its own lane, overlapping on the same axis, with nested children as extra rows under their parent.
-  - **success:** Parallel children are visibly concurrent. Nested children add rows, not a second page. Nesting is `parentTaskId` matching a spawn tool id in another process's messages; `parentUuid` continuation files are the same child (one row), not extra rows. A session with no children still works: one parent lane, plus HITL marks if any.
+  - **success:** Parallel children are visibly concurrent. Nested children add rows under the process that spawned them, not a second page. `parentUuid` continuation files are the same child: one row, one bar per activation; gaps between activations are not child work. A session with no children still works: one parent lane, plus HITL marks if any.
 
 - **CAP-4**
   - **intent:** User can distinguish human (or scripted-resume) waits from parent work and from child-wait.
-  - **success:** Ask and answer appear as marks; the gap between them is HITL-wait, not parent work, and is not omitted. Child-wait looks different from HITL-wait (hatch vs warning tint — `swimlane-visual.md`). Inference rules live in `interval-classes.md`. Marks are labeled; they do not claim certainty.
+  - **success:** Ask and answer are paired marks per `interval-classes.md`; the gap is HITL-wait, not parent work, and is not omitted. While an ask is open, HITL-wait wins over child-wait. Child-wait is only silent + children + no open HITL. Child-wait looks different from HITL-wait (`swimlane-visual.md`). Marks are labeled; they do not claim certainty.
 
 - **CAP-5**
   - **intent:** User can profile wall time and token economy from the lane without opening the JSONL.
@@ -39,7 +39,7 @@ A pain: Claude Code sessions that matter — especially BMAD skill runs — are 
 
 - **CAP-6**
   - **intent:** User can jump from a swimlane bar into the existing turn or subagent microscope.
-  - **success:** Click a parent interval or child bar turns the swimlane off, then calls existing navigation: parent → that turn; child → `expandSubagentTrace`. No second microscope. No overlay. No stacked pane above the list.
+  - **success:** Click a bar that already has a microscope target turns the swimlane off, then opens that target: parent work → that turn; child with an existing card → that card. Silent parent intervals are not clickable. Nested rows without a card stay visible. No second microscope. No overlay. No stacked pane above the list.
 
 - **CAP-7**
   - **intent:** Spawn join treats Claude Code `Agent` tool calls as child spawns, not only `Task`, so parallel children do not collapse into one turn and remain reachable in the existing microscope.
@@ -48,11 +48,11 @@ A pain: Claude Code sessions that matter — especially BMAD skill runs — are 
 ## Constraints
 
 - One Claude data root, one session tree. An orchestrator in `~/.claude` that launched `claude -p` into `/tmp/.../claude-home` is two roots; out of scope. The swimlane for a reviewer session is that session plus its `subagents/`.
-- Add a projection `buildSwimlane(chunks, processes, messages)`, not a second session model. Consume `SessionParser`, `SubagentLocator` / `SubagentResolver`, `ProcessLinker`, and `Process` (`startTime`, `endTime`, `parentTaskId`, `metrics`). See `brownfield.md`.
-- Do not edit `ChunkBuilder` except as required to classify `Agent` as a spawn. Do not restyle `ChatHistory`. Do not add a new parser or a third interpretation of unofficial jsonl; inherit the existing parser's drift handling.
-- Child file paths go through the existing locator. Do not hardcode `projects/<id>/subagents/` vs `projects/<id>/<sessionId>/subagents/`.
-- A silent stretch must never look like work. Wrong wait-class is acceptable if the gap is still drawn.
-- Isolate the change: (1) a pure lane-model function testable without Electron; (2) a small view that reuses existing surface colors and type — no new design system, no new CSS variables (`swimlane-visual.md`); (3) one Swimlane button in ChatHistory's sticky top-right row, tab-local toggle like Context panel visibility, off by default, no Settings, no theme work; (4) click-through dismisses the swimlane and calls the navigation they already have.
+- Add a projection `buildSwimlane(chunks, processes, messages)` in main analysis, not a second session model and not a renderer util against stripped IPC messages. It runs before the IPC strip and serializes a `SwimlaneModel` onto `SessionDetail`. Consume `SessionParser`, `SubagentLocator` / `SubagentResolver`, `ProcessLinker`, and `Process`. See `brownfield.md`.
+- Do not edit `ChunkBuilder` except as required to classify `Agent` as a spawn. Do not restyle `ChatHistory`. Do not add a new parser or a third interpretation of unofficial jsonl; inherit the existing parser's drift handling and token dedup.
+- Child file paths go through the existing locator. Do not hardcode `projects/<id>/subagents/` vs `projects/<id>/<sessionId>/subagents/`. Do not gate the toggle or child lanes on `hasSubagents`; `listSubagentFiles` / resolved `Process[]` is authoritative.
+- A silent stretch must never look like work. Waiting on spawned children is silence. Wrong wait-class is acceptable only for leftover gaps with no open HITL pair and no child timestamps in range.
+- Isolate the change: (1) a pure lane-model function in main, testable without Electron; (2) a small view that reuses existing surface colors and type — no new design system, no new CSS variables (`swimlane-visual.md`); (3) one Swimlane button in ChatHistory's sticky top-right row, tab-local toggle like Context panel visibility, off by default, no Settings, no theme work; (4) click-through only opens an existing microscope target.
 - HITL is inferred, not a log type. Label the mark; do not pretend certainty.
 
 ## Non-goals
@@ -66,7 +66,7 @@ A pain: Claude Code sessions that matter — especially BMAD skill runs — are 
 
 ## Success signal
 
-Open a session that spawned parallel Agents and had a checkpoint/resume (the shape of bmad-code-review run 1). The button is visible at the top of the session view without hunting Settings. One click shows parent plus each child on one time axis; overlapping children are visibly concurrent. The HITL gap is a marked wait, not parent work, and not omitted. Child-wait (parent quiet, hunters running) looks different from HITL-wait. Bars carry wall time and the four token numbers. Click parent bar → that turn; click child bar → existing subagent detail. Toggle off → the normal turn list, unchanged. A session with no children still works: one parent lane, HITL marks if any.
+Open a session that spawned parallel Agents and had a human/scripted resume (the shape of bmad-code-review run 1). The button is visible at the top of the session view without hunting Settings. One click shows parent plus each child on one time axis; overlapping children are visibly concurrent. Parent-quiet-while-children-run is child-wait, not parent work. The HITL gap is a marked wait, not omitted. Child-wait looks different from HITL-wait; an open ask still shows HITL-wait if children are also running. Bars carry wall time and the four token numbers. Click a work bar or a child that already has a card → that existing microscope. Toggle off → the normal turn list, unchanged. A session with no children still works: one parent lane, HITL marks if any.
 
 ## Assumptions
 

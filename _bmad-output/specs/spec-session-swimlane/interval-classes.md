@@ -1,50 +1,53 @@
 # Interval classes and HITL inference
 
-Load-bearing classification for CAP-2 and CAP-4. The kernel names the classes; this file defines them.
+Load-bearing classification for CAP-2 and CAP-4.
 
 ## Time axis
 
 Wall clock from the earliest to latest timestamp in the parent session plus resolved children.
 
+## Parent work vs silence
+
+Parent **work** is when the parent is producing (assistant output). Assistant and `tool_use` timestamps are instants (`tool_use` inherits its containing assistant's timestamp). They are not intervals. Do not gap-fill to the next timestamp (`fillTimelineGaps` would paint silence as work).
+
+Waiting on a spawned child is silence, then classified — even when the next parent assistant is still in the same AI chunk. That is the demo case: parent parks, children run.
+
+Attribute parent-bar tokens from those producing assistants only, using the existing `requestId` / `calculateMetrics` dedup. Do not invent a second token sum. Do not attribute child usage or `mainSessionImpact`.
+
 ## Parent interval classes
 
 | Class | When | Must look like |
 | --- | --- | --- |
-| **work** | Parent is producing: assistant timestamps and their `tool_use` timestamps | Parent work |
-| **child-wait** | Parent silent, and at least one linked child still has timestamps in the gap | Wait, not work. Distinct from HITL-wait |
-| **HITL-wait** | Parent silent after an ask/checkpoint until the next real user/resume | Wait, not work. Distinct from child-wait. Ask and answer are marks; the gap is the wait |
+| **work** | Parent producing | Parent work |
+| **HITL-wait** | Parent silent and a HITL ask is open | Wait, not work. Distinct from child-wait. Ask and answer are marks; the gap is the wait |
+| **child-wait** | Parent silent, a linked child has timestamps in the gap, no HITL ask open | Wait, not work. Distinct from HITL-wait |
 | **idle** | Parent silent, no linked child running, no open HITL | Silent, not work |
 
-Wrong wait-class is acceptable if the gap is still drawn. A silent stretch must never look like work.
+Precedence: HITL-wait while an ask is open, else child-wait, else idle. No fourth class.
+
+A silent stretch must never look like work. Wrong wait-class is acceptable only for leftover gaps with no open HITL pair and no child timestamps in range.
+
+Must not misclassify: child-only wait; explicit AskUserQuestion pair with no children; idle; overlapping HITL + children (HITL-wait).
 
 ## Child bars
 
-One bar per spawned Agent/Task child, from the first to last timestamp in that child's jsonl. Parallel children overlap on the time axis.
+One row per spawned Agent/Task child. Parallel children overlap on the time axis.
 
-**Nesting.** Process B is a child-of-child when `B.parentTaskId` matches a spawn tool_use id (`isTask`) in process A's messages. Render B as an extra row under A, not a second page.
+**Nesting.** Extra rows under the process that spawned them, not a second page. Use the same spawn-join rules already used for root children (including team members), applied to each process's messages. Do not assume resolver `parentTaskId` already means “spawned by this process.”
 
-**Continuations.** Processes linked by the existing `parentUuid` continuation chain are the same child: one row, bar from earliest `startTime` to latest `endTime`. Do not add extra rows for continuation files.
+**Continuations.** `parentUuid` chain = the same child: one row, one bar per activation (`startTime`–`endTime` of that JSONL). Gaps between activations are empty, not child work. Click the activation that was clicked.
 
 ## HITL inference
 
 HITL is inferred, not a log type. Label the mark; do not pretend certainty.
 
-Treat as HITL when the parent stopped for a human, or for a scripted resume that looks like one:
+An ask is **open** from its start mark until its matching end mark (or axis end if unanswered). The gap is HITL-wait, not parent work, and must not be omitted.
 
-- `AskUserQuestion`
-- A real user message after the parent went quiet (`isParsedRealUserMessage`: `isMeta: false`, not a tool result)
-- A headless `claude -p` checkpoint: last assistant in a segment, process ends, later a user string in the same session that is not a `tool_result` and not `isMeta`
+- **AskUserQuestion:** start = the tool_use; end = the matching tool_result / `toolUseResult` for that tool_use id. Not the next `isParsedRealUserMessage` (that is the next typed prompt). Label `ask`.
+- **Resume:** a later `isParsedRealUserMessage` (`isMeta: false`, not tool-result-only) after the parent went silent, and no AskUserQuestion pair already covers the gap. Label `resume`.
 
-Show ask and answer as marks. The gap between them is HITL-wait, not parent work, and must not be omitted.
+Do not require a separate checkpoint class. Messages cannot distinguish it from resume.
 
 ## Token numbers on bars
 
-Each bar (parent interval and child) shows:
-
-- wall duration
-- uncached input
-- cache read
-- cache write
-- output
-
-Child numbers are the child's own assistant `usage` in that jsonl (uncached input / cache_read / cache_creation / output). Do not use the parent's `mainSessionImpact` as if it were the child's burn.
+Each bar (parent work interval and child activation) shows wall duration plus uncached input, cache read, cache write, and output. Child numbers are that activation's own assistant usage. Never `mainSessionImpact`.

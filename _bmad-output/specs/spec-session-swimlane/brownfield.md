@@ -4,15 +4,19 @@ Existing surfaces and types this change must consume. Do not invent a parallel s
 
 ## Consume, do not replace
 
-- `SessionParser` — jsonl parse. Inherit its drift handling. Do not add a third interpretation of unofficial records.
-- `SubagentLocator` / `SubagentResolver` — child file discovery and spawn join. Locator already handles NEW `{projectId}/{sessionId}/subagents/agent-*.jsonl` and OLD `{projectId}/agent-*.jsonl`. Call it; do not hardcode either path.
+- `SessionParser` — jsonl parse. Inherit its drift handling and `requestId` / `calculateMetrics` dedup. Do not add a third interpretation of unofficial records.
+- `SubagentLocator` / `SubagentResolver` — child file discovery and spawn join. Locator already handles NEW `{projectId}/{sessionId}/subagents/agent-*.jsonl` and OLD `{projectId}/agent-*.jsonl`. Call it; do not hardcode either path. Do not gate the Swimlane toggle or child lanes on `hasSubagents` / initial `session.hasSubagents` — that helper only checks the NEW directory. `listSubagentFiles` / resolved `Process[]` is authoritative. Session-detail already overwrites `session.hasSubagents` from `resolveSubagents()`.
 - `ProcessLinker` — links `Process` to AI chunks via `parentTaskId`, then timing fallback (`startTime` inside parent chunk) for orphans with no `parentTaskId`.
 - `Process` (`src/main/types/chunks.ts`): `startTime`, `endTime`, `parentTaskId`, `metrics`, `mainSessionImpact`. `metrics` is the child's own burn. `mainSessionImpact` is what the spawn tool_use / tool_result costs the parent context window — never treat it as the child's tokens.
 - `SessionMetrics`: `inputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `outputTokens`, `durationMs`.
 
 ## Projection
 
-New pure function `buildSwimlane(chunks, processes, messages)` — new file under analysis or renderer utils. Testable without Electron. This is the lane model. Not a second session parser.
+New pure function `buildSwimlane(chunks, processes, messages)` in `src/main/services/analysis/`. Testable without Electron. This is the lane model. Not a second session parser. Not a renderer util.
+
+`get-session-detail` clears top-level `messages` and every top-level `Process.messages` before IPC. Run `buildSwimlane` on the pre-strip inputs and attach a serializable `SwimlaneModel` to `SessionDetail`. The renderer reads that projection only.
+
+After `get-session-detail`, the renderer can draw the lane without reading `session.messages` or `Process.messages`.
 
 ## Agent-as-spawn (allowed existing-code edit)
 
@@ -27,7 +31,7 @@ Set `isTask` for `Agent` as well as `Task`. Every check that decides a linked `P
 
 `contextTracker` display name follows `isTask`. Do not change `SubagentItem` appearance. Do not edit `ChunkBuilder` except as required to classify `Agent` as a spawn.
 
-Prefer `parentTaskId` / spawn tool id. Timing fallback remains last resort.
+`SubagentResolver` assigns `parentTaskId` from the root session only. Nesting uses the same spawn-join rules on each process's messages (`interval-classes.md`). Prefer spawn-id join. Timing fallback remains last resort.
 
 ## Session-view chrome (do not invent a new language)
 
@@ -37,18 +41,19 @@ Prefer `parentTaskId` / spawn tool id. Timing fallback remains last resort.
 
 ## Click-through
 
-Swimlane **replaces** the turn list while on. Click a bar turns the swimlane off, then:
+Swimlane **replaces** the turn list while on. Click a bar that already has a microscope target turns the swimlane off, then opens that target with the navigation the session view already has.
 
-- Parent interval → existing scroll-to-turn navigation.
-- Child bar → existing `expandSubagentTrace` / `expandSubagentTraceForTab`.
+- Parent work → that turn.
+- Child with an existing card → that card.
+- Silent parent intervals are not clickable. Nested rows without a card stay visible.
 
-No overlay. No stacked pane above the list. Do not duplicate the microscope. Do not restyle `ChatHistory`.
+No overlay. No stacked pane. Do not duplicate the microscope. Do not restyle `ChatHistory`.
 
 ## Isolation
 
 1. Pure lane-model function, testable without Electron.
 2. Small view: time axis, rows, bars, marks. Reuse existing surface colors and type. No new design system.
 3. One button. Toggle local to the tab. Off by default. No settings. No theme work.
-4. Click-through calls navigation they already have.
+4. Click-through dismisses the swimlane and opens an existing microscope target.
 
 Do not restyle ChatHistory, tokens, context panel, or the subagent modal.

@@ -8,25 +8,34 @@
   done_checkpoint: false
   invoke_dev_with: >-
     Start at src/main/utils/toolExtraction.ts. Then displayItemBuilder and
-    ConversationGroupBuilder (name === 'Task' gates). Do not restyle
-    SubagentItem. Do not edit ChunkBuilder except as required for this join.
-    contextTracker label follows isTask.
+    ConversationGroupBuilder (name === 'Task' gates). A shared isTask /
+    spawn-name predicate is enough; do not add isTask onto SemanticStep
+    or LinkedToolItem unless a call site cannot see ToolCall. Do not
+    restyle SubagentItem. Do not edit ChunkBuilder except as required
+    for this join. contextTracker label follows isTask.
 
 - id: "2"
   title: Project the lane model
   description: >-
-    CAP-2, CAP-3, CAP-4, and CAP-5 data: buildSwimlane(chunks, processes,
-    messages) emits parent intervals, child lanes, nesting, HITL marks, and
-    the four token numbers. Interval classes and HITL inference are in
-    interval-classes.md; brownfield.md names the inputs.
+    CAP-2, CAP-3, CAP-4, and CAP-5 data: buildSwimlane in main analysis
+    emits partitioned parent work, nested child rows, continuation
+    segments, paired HITL marks, and the four token numbers as
+    SwimlaneModel on SessionDetail. Interval classes, pairing,
+    precedence, and fixtures are in interval-classes.md; placement and
+    IPC are in brownfield.md.
   spec_checkpoint: false
   done_checkpoint: false
   invoke_dev_with: >-
-    Pure function, new file, testable without Electron. No new parser.
-    Child tokens from Process.metrics, never mainSessionImpact. Silent
-    stretch must never classify as work. Continuation files (parentUuid
-    chain) are one row; nesting is parentTaskId matching a spawn in
-    another process's messages.
+    Pure function in src/main/services/analysis/, testable without
+    Electron. Attach SwimlaneModel to SessionDetail before the IPC
+    strip; do not implement against stripped renderer messages. Follow
+    interval-classes.md: work partition (no fillTimelineGaps), HITL
+    pairing by tool_use id, wait-class precedence, nest join from
+    process messages (do not trust resolver parentTaskId), one
+    continuation row with one bar per activation. Required fixtures:
+    child-only wait, explicit HITL, idle, overlapping HITL+children,
+    two nesting levels. Child tokens from Process.metrics, never
+    mainSessionImpact. Do not gate children on hasSubagents.
 
 - id: "3"
   title: Add the swimlane toggle
@@ -39,8 +48,9 @@
   invoke_dev_with: >-
     Follow showContextPanel in tabUISlice. Always render the sticky row so
     the button is visible when Context is hidden. Same --context-btn-*
-    language as Context. Not SearchBar (Cmd+F only). The surface can be
-    empty this story; drawing is story 4.
+    language as Context. Not SearchBar (Cmd+F only). Do not gate the
+    button on hasSubagents. The surface can be empty this story; drawing
+    is story 4.
 
 - id: "4"
   title: Draw the wall-clock
@@ -53,19 +63,26 @@
   done_checkpoint: false
   invoke_dev_with: >-
     Small view. Reuse existing surface colors and type. No new design
-    system. No ChatHistory restyle. A session with no children is one
-    parent lane plus HITL marks if any.
+    system. No ChatHistory restyle. Continuation gaps stay empty (one
+    bar per activation). An open ask draws HITL-wait even if children
+    are running. A session with no children is one parent lane plus HITL
+    marks if any. Tokens and marks: swimlane-visual.md.
 
 - id: "5"
   title: Click through to the microscope
   description: >-
     CAP-6: click a parent interval or child bar turns the swimlane off,
-    then calls existing navigation — parent to that turn, child to
-    expandSubagentTrace. No second microscope.
+    then runs the existing error-nav sequence so the turn or subagent
+    card is expanded and scrolled into view. Do not call
+    expandSubagentTrace alone; no second microscope.
   spec_checkpoint: false
   done_checkpoint: true
   invoke_dev_with: >-
-    Dismiss first, then existing scroll-to-turn / expandSubagentTraceForTab.
-    No overlay. No stacked pane. Demo against a session that spawned
-    parallel Agents and had a checkpoint/resume (bmad-code-review run 1
-    shape), plus a no-children session.
+    Dismiss first, then the sequence in brownfield.md — parent:
+    ensureGroupVisible + scroll to that turn; child: expand owning AI
+    group, expand the outer SubagentItem, expandSubagentTrace,
+    ensureGroupVisible, scroll. Do not call expandSubagentTraceForTab
+    alone. Lane-model turn/group targets required. Cover collapsed and
+    virtualized destinations. No overlay. No stacked pane. Demo against
+    a session that spawned parallel Agents and had a checkpoint/resume
+    (bmad-code-review run 1 shape), plus a no-children session.
