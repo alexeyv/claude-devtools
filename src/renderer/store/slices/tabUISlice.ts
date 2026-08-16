@@ -7,6 +7,7 @@
  * - Display item expansion within AI groups
  * - Subagent trace expansion
  * - Context panel visibility
+ * - Swimlane visibility
  * - Scroll position
  *
  * The state is keyed by tabId, so opening the same session in two tabs gives each
@@ -37,6 +38,9 @@ export interface TabUIState {
   /** Whether the context panel is visible */
   showContextPanel: boolean;
 
+  /** Whether the swimlane surface is visible */
+  showSwimlane: boolean;
+
   /** Selected context phase for filtering (null = current/latest phase) */
   selectedContextPhase: number | null;
 
@@ -53,6 +57,7 @@ function createDefaultTabUIState(): TabUIState {
     expandedDisplayItemIds: new Map(),
     expandedSubagentTraceIds: new Set(),
     showContextPanel: false,
+    showSwimlane: false,
     selectedContextPhase: null,
     savedScrollTop: undefined,
   };
@@ -101,6 +106,12 @@ export interface TabUISlice {
   setContextPanelVisibleForTab: (tabId: string, visible: boolean) => void;
   /** Get context panel visibility for a specific tab */
   isContextPanelVisibleForTab: (tabId: string) => boolean;
+
+  // Swimlane (per-tab)
+  /** Set swimlane visibility for a specific tab */
+  setSwimlaneVisibleForTab: (tabId: string, visible: boolean) => void;
+  /** Get swimlane visibility for a specific tab */
+  isSwimlaneVisibleForTab: (tabId: string) => boolean;
 
   // Context phase selection (per-tab)
   /** Set the selected context phase for a specific tab */
@@ -285,6 +296,24 @@ export const createTabUISlice: StateCreator<AppState, [], [], TabUISlice> = (set
   isContextPanelVisibleForTab: (tabId: string) => {
     const tabState = get().tabUIStates.get(tabId);
     return tabState?.showContextPanel ?? false;
+  },
+
+  // ==========================================================================
+  // Swimlane
+  // ==========================================================================
+
+  setSwimlaneVisibleForTab: (tabId: string, visible: boolean) => {
+    const state = get();
+    const newMap = new Map(state.tabUIStates);
+    const tabState = newMap.get(tabId) ?? createDefaultTabUIState();
+
+    newMap.set(tabId, { ...tabState, showSwimlane: visible });
+    set({ tabUIStates: newMap });
+  },
+
+  isSwimlaneVisibleForTab: (tabId: string) => {
+    const tabState = get().tabUIStates.get(tabId);
+    return tabState?.showSwimlane ?? false;
   },
 
   // ==========================================================================

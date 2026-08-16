@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { isNearBottom, useAutoScrollBottom } from '@renderer/hooks/useAutoScrollBottom';
 import { useTabNavigationController } from '@renderer/hooks/useTabNavigationController';
@@ -19,6 +19,7 @@ const CONTEXT_PANEL_WIDTH_PX = 320;
 import { ChatHistoryEmptyState } from './ChatHistoryEmptyState';
 import { ChatHistoryItem } from './ChatHistoryItem';
 import { ChatHistoryLoadingState } from './ChatHistoryLoadingState';
+import { SwimlaneSurface } from './SwimlaneSurface';
 
 import type { ContextInjection } from '@renderer/types/contextInjection';
 
@@ -29,6 +30,12 @@ function waitForDoubleRaf(): Promise<void> {
   return new Promise((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
   );
+}
+
+/** Waits one frame beyond the auto-follow hook's double-RAF update. */
+async function waitForTripleRaf(): Promise<void> {
+  await waitForDoubleRaf();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 interface ChatHistoryProps {
@@ -44,6 +51,8 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const {
     isContextPanelVisible,
     setContextPanelVisible,
+    isSwimlaneVisible,
+    setSwimlaneVisible,
     savedScrollTop,
     saveScrollPosition,
     expandAIGroup,
@@ -102,6 +111,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
   // State for Context button hover (local state OK - doesn't need per-tab isolation)
   const [isContextButtonHovered, setIsContextButtonHovered] = useState(false);
+  const [isSwimlaneButtonHovered, setIsSwimlaneButtonHovered] = useState(false);
 
   // Determine if this tab instance is currently active
   // Use tabId prop if provided, otherwise fall back to activeTabId (for backwards compatibility)
@@ -180,6 +190,64 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
 
   // Shared scroll container ref - used by both auto-scroll and navigation coordinator
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const preservedSwimlaneScrollTopRef = useRef<number | null>(null);
+  const scrollRestoreGenerationRef = useRef(0);
+  const handledSearchNavigationRef = useRef<string | null>(null);
+  const searchNavigationWasActiveRef = useRef(isThisTabActive);
+
+  // Apply native accessibility state in the ref callback so a list container
+  // remounted after a loading/empty branch immediately receives the current mode.
+  const registerScrollContainer = useCallback(
+    (container: HTMLDivElement | null): void => {
+      (scrollContainerRef as MutableRefObject<HTMLDivElement | null>).current = container;
+      if (!container) return;
+      if (isSwimlaneVisible) {
+        container.setAttribute('inert', '');
+        container.setAttribute('aria-hidden', 'true');
+      } else {
+        container.removeAttribute('inert');
+        container.removeAttribute('aria-hidden');
+      }
+    },
+    [isSwimlaneVisible]
+  );
+
+  const cancelPendingScrollRestore = useCallback((): void => {
+    scrollRestoreGenerationRef.current += 1;
+  }, []);
+
+  const handleSwimlaneToggle = useCallback((): void => {
+    if (!isSwimlaneVisible) {
+      cancelPendingScrollRestore();
+      preservedSwimlaneScrollTopRef.current = scrollContainerRef.current?.scrollTop ?? null;
+      setSwimlaneVisible(true);
+      return;
+    }
+
+    const preservedScrollTop = preservedSwimlaneScrollTopRef.current;
+    const restoreGeneration = scrollRestoreGenerationRef.current + 1;
+    scrollRestoreGenerationRef.current = restoreGeneration;
+    setSwimlaneVisible(false);
+
+    // useAutoScrollBottom also reacts to disabled -> enabled with a double RAF.
+    // Restore one frame later so a manual toggle returns to the exact reading position.
+    void waitForTripleRaf().then(() => {
+      if (
+        scrollRestoreGenerationRef.current === restoreGeneration &&
+        preservedScrollTop !== null &&
+        scrollContainerRef.current
+      ) {
+        scrollContainerRef.current.scrollTop = preservedScrollTop;
+      }
+    });
+  }, [cancelPendingScrollRestore, isSwimlaneVisible, setSwimlaneVisible]);
+
+  const revealTurnList = useCallback(async (): Promise<void> => {
+    cancelPendingScrollRestore();
+    if (!isSwimlaneVisible) return;
+    setSwimlaneVisible(false);
+    await waitForDoubleRaf();
+  }, [cancelPendingScrollRestore, isSwimlaneVisible, setSwimlaneVisible]);
 
   const isSearchActive = searchQuery.trim().length > 0;
   const shouldVirtualize = (conversation?.items.length ?? 0) >= VIRTUALIZATION_THRESHOLD;
@@ -227,9 +295,24 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     [groupIndexMap, rowVirtualizer, shouldVirtualize]
   );
 
-  // Sticky context button height (py-3 = 12px padding * 2 + button height ~28px + pt-3 = 12px)
+  // Sticky control row height (py-3 = 12px padding * 2 + button height ~28px + pt-3 = 12px)
   // Total: approximately 52px, round up to 60px for safety
-  const STICKY_BUTTON_OFFSET = allContextInjections.length > 0 ? 60 : 0;
+  const STICKY_BUTTON_OFFSET = 60;
+
+  // A pending deep link targets the turn list. Reveal it first so the existing
+  // navigation controller can resolve refs and scroll against a visible surface.
+  useEffect(() => {
+    if (isThisTabActive && pendingNavigation && isSwimlaneVisible) {
+      cancelPendingScrollRestore();
+      setSwimlaneVisible(false);
+    }
+  }, [
+    isThisTabActive,
+    pendingNavigation,
+    isSwimlaneVisible,
+    cancelPendingScrollRestore,
+    setSwimlaneVisible,
+  ]);
 
   // Unified navigation controller - replaces useNavigationCoordinator + useSearchContextNavigation
   // Must be created before useAutoScrollBottom so we can pass shouldDisableAutoScroll
@@ -244,7 +327,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     isActiveTab: isThisTabActive,
     pendingNavigation,
     conversation,
-    conversationLoading,
+    conversationLoading: conversationLoading || isSwimlaneVisible,
     consumeTabNavigation,
     tabId: effectiveTabId ?? '',
     aiGroupRefs,
@@ -279,7 +362,13 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   // Skip when virtualizing: only a subset of items are rendered, so DOM-based sync
   // would produce an incomplete match list. The store-level matches are already correct.
   useEffect(() => {
-    if (!isThisTabActive || !isSearchActive || !conversation || shouldVirtualize) {
+    if (
+      !isThisTabActive ||
+      !isSearchActive ||
+      !conversation ||
+      shouldVirtualize ||
+      isSwimlaneVisible
+    ) {
       emptyRenderedSyncCountRef.current = 0;
       return;
     }
@@ -331,6 +420,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     isThisTabActive,
     isSearchActive,
     shouldVirtualize,
+    isSwimlaneVisible,
     conversation,
     currentSearchIndex,
     searchMatches,
@@ -354,11 +444,15 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const [showScrollButton, setShowScrollButton] = useState(false);
 
   const checkScrollButton = useCallback(() => {
+    if (isSwimlaneVisible) {
+      setShowScrollButton(false);
+      return;
+    }
     const container = scrollContainerRef.current;
     if (!container) return;
     const { scrollTop, scrollHeight, clientHeight } = container;
     setShowScrollButton(!isNearBottom(scrollTop, scrollHeight, clientHeight, SCROLL_THRESHOLD));
-  }, []);
+  }, [isSwimlaneVisible]);
 
   // Auto-follow when conversation updates, but only if the user was already near bottom.
   // This preserves manual reading position when the user scrolls up.
@@ -367,7 +461,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     threshold: SCROLL_THRESHOLD,
     smoothDuration: 300,
     autoBehavior: 'auto',
-    disabled: shouldDisableAutoScroll,
+    disabled: shouldDisableAutoScroll || isSwimlaneVisible,
     externalRef: scrollContainerRef,
     resetKey: effectiveTabId,
   });
@@ -380,11 +474,12 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   // Listen for session-refresh-scroll-bottom events (from Ctrl+R / refresh button)
   useEffect(() => {
     const handler = (): void => {
+      if (isSwimlaneVisible) return;
       scrollToBottom('smooth');
     };
     window.addEventListener('session-refresh-scroll-bottom', handler);
     return () => window.removeEventListener('session-refresh-scroll-bottom', handler);
-  }, [scrollToBottom]);
+  }, [isSwimlaneVisible, scrollToBottom]);
 
   // Callback to register AI group refs (combines with visibility hook)
   const registerAIGroupRefCombined = useCallback(
@@ -409,6 +504,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       if (targetItem?.type !== 'ai') return;
 
       const run = async (): Promise<void> => {
+        await revealTurnList();
         const groupId = targetItem.group.id;
         await ensureGroupVisible(groupId);
         const element = aiGroupRefs.current.get(groupId);
@@ -428,7 +524,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       };
       void run();
     },
-    [conversation, ensureGroupVisible, setHighlightedGroupId]
+    [conversation, ensureGroupVisible, revealTurnList, setHighlightedGroupId]
   );
 
   // Handler to navigate to a user message group (preceding the AI group at turnIndex)
@@ -445,6 +541,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       if (prevItem?.type !== 'user') return;
 
       const run = async (): Promise<void> => {
+        await revealTurnList();
         const groupId = prevItem.group.id;
         await ensureGroupVisible(groupId);
         const element = chatItemRefs.current.get(groupId);
@@ -464,7 +561,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       };
       void run();
     },
-    [conversation, ensureGroupVisible, setHighlightedGroupId]
+    [conversation, ensureGroupVisible, revealTurnList, setHighlightedGroupId]
   );
 
   // Handler to navigate to a specific tool within a turn from context panel
@@ -477,6 +574,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       if (targetItem?.type !== 'ai') return;
 
       const run = async (): Promise<void> => {
+        await revealTurnList();
         const groupId = targetItem.group.id;
         await ensureGroupVisible(groupId);
 
@@ -513,13 +611,39 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       };
       void run();
     },
-    [conversation, ensureGroupVisible, setHighlightedGroupId]
+    [conversation, ensureGroupVisible, revealTurnList, setHighlightedGroupId]
   );
 
   // Scroll to current search result when it changes
   useEffect(() => {
+    const wasActive = searchNavigationWasActiveRef.current;
+    searchNavigationWasActiveRef.current = isThisTabActive;
+    // On activation, the earlier search-sync effect first rebuilds global matches
+    // for this tab. Wait for that rerender rather than navigating stale tab results.
+    if (!isThisTabActive || !wasActive) return;
+
     const currentMatch = currentSearchIndex >= 0 ? searchMatches[currentSearchIndex] : null;
-    if (!currentMatch) return;
+    if (!currentMatch || !searchQuery.trim()) {
+      handledSearchNavigationRef.current = null;
+      return;
+    }
+
+    const searchNavigationIdentity = [
+      searchQuery,
+      currentSearchIndex,
+      currentMatch.itemId,
+      currentMatch.matchIndexInItem,
+    ].join('\u0000');
+
+    if (handledSearchNavigationRef.current === searchNavigationIdentity) return;
+
+    if (isSwimlaneVisible) {
+      cancelPendingScrollRestore();
+      setSwimlaneVisible(false);
+      return;
+    }
+
+    handledSearchNavigationRef.current = searchNavigationIdentity;
 
     let frameId = 0;
     let attempt = 0;
@@ -646,7 +770,17 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       cancelled = true;
       cancelAnimationFrame(frameId);
     };
-  }, [currentSearchIndex, searchMatches, scrollContainerRef, ensureGroupVisible]);
+  }, [
+    currentSearchIndex,
+    searchMatches,
+    scrollContainerRef,
+    ensureGroupVisible,
+    isSwimlaneVisible,
+    isThisTabActive,
+    searchQuery,
+    cancelPendingScrollRestore,
+    setSwimlaneVisible,
+  ]);
 
   // Track previous active state to detect when THIS tab becomes active/inactive
   const wasActiveRef = useRef(isThisTabActive);
@@ -750,20 +884,15 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       style={{ backgroundColor: 'var(--color-surface)' }}
     >
       <div className="relative flex flex-1 overflow-hidden">
-        {/* Chat content */}
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto"
-          style={{ backgroundColor: 'var(--color-surface)' }}
-          onScroll={checkScrollButton}
-        >
-          {/* Sticky Context button */}
-          {allContextInjections.length > 0 && (
-            <div className="pointer-events-none sticky top-0 z-10 flex justify-end px-4 pb-0 pt-3">
+        <div className="relative flex flex-1 overflow-hidden">
+          {/* Always-present session-view controls, shared by both surfaces. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-end gap-2 px-4 pb-0 pt-3">
+            {allContextInjections.length > 0 && (
               <button
                 onClick={() => setContextPanelVisible(!isContextPanelVisible)}
                 onMouseEnter={() => setIsContextButtonHovered(true)}
                 onMouseLeave={() => setIsContextButtonHovered(false)}
+                aria-pressed={isContextPanelVisible}
                 className="pointer-events-auto flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs shadow-lg transition-colors"
                 style={{
                   backgroundColor: isContextPanelVisible
@@ -778,75 +907,112 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
               >
                 Context ({allContextInjections.length})
               </button>
-            </div>
-          )}
+            )}
+            <button
+              onClick={handleSwimlaneToggle}
+              onMouseEnter={() => setIsSwimlaneButtonHovered(true)}
+              onMouseLeave={() => setIsSwimlaneButtonHovered(false)}
+              aria-pressed={isSwimlaneVisible}
+              className="pointer-events-auto flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs shadow-lg transition-colors"
+              style={{
+                backgroundColor: isSwimlaneVisible
+                  ? 'var(--context-btn-active-bg)'
+                  : isSwimlaneButtonHovered
+                    ? 'var(--context-btn-bg-hover)'
+                    : 'var(--context-btn-bg)',
+                color: isSwimlaneVisible
+                  ? 'var(--context-btn-active-text)'
+                  : 'var(--color-text-secondary)',
+              }}
+            >
+              Swimlane
+            </button>
+          </div>
+
+          {/* Keep the real list mounted so local state, refs, and scrollTop survive. */}
           <div
-            className="mx-auto max-w-5xl px-6 py-8"
-            style={{ marginTop: allContextInjections.length > 0 ? '-2rem' : 0 }}
+            ref={registerScrollContainer}
+            data-testid="turn-list-surface"
+            className="flex-1 overflow-y-auto"
+            style={{
+              backgroundColor: 'var(--color-surface)',
+              visibility: isSwimlaneVisible ? 'hidden' : 'visible',
+              pointerEvents: isSwimlaneVisible ? 'none' : 'auto',
+            }}
+            onScroll={checkScrollButton}
           >
-            <div className="space-y-8">
-              {shouldVirtualize ? (
-                <div
-                  style={{
-                    height: `${rowVirtualizer.getTotalSize()}px`,
-                    width: '100%',
-                    position: 'relative',
-                  }}
-                >
-                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                    const item = conversation.items[virtualRow.index];
-                    if (!item) return null;
-                    return (
-                      <div
-                        key={virtualRow.key}
-                        ref={rowVirtualizer.measureElement}
-                        data-index={virtualRow.index}
-                        className="pb-8"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: '100%',
-                          transform: `translateY(${virtualRow.start}px)`,
-                        }}
-                      >
-                        <ChatHistoryItem
-                          item={item}
-                          highlightedGroupId={highlightedGroupId}
-                          highlightToolUseId={effectiveHighlightToolUseId}
-                          isSearchHighlight={isSearchHighlight}
-                          isNavigationHighlight={isNavigationHighlight}
-                          highlightColor={effectiveHighlightColor}
-                          registerChatItemRef={registerChatItemRef}
-                          registerAIGroupRef={registerAIGroupRefCombined}
-                          registerToolRef={registerToolRef}
-                        />
-                      </div>
-                    );
-                  })}
+            <div
+              data-testid="turn-list-control-offset"
+              style={{ paddingTop: STICKY_BUTTON_OFFSET }}
+            >
+              <div className="mx-auto max-w-5xl px-6 py-8">
+                <div className="space-y-8">
+                  {shouldVirtualize ? (
+                    <div
+                      style={{
+                        height: `${rowVirtualizer.getTotalSize()}px`,
+                        width: '100%',
+                        position: 'relative',
+                      }}
+                    >
+                      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                        const item = conversation.items[virtualRow.index];
+                        if (!item) return null;
+                        return (
+                          <div
+                            key={virtualRow.key}
+                            ref={rowVirtualizer.measureElement}
+                            data-index={virtualRow.index}
+                            className="pb-8"
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              transform: `translateY(${virtualRow.start}px)`,
+                            }}
+                          >
+                            <ChatHistoryItem
+                              item={item}
+                              highlightedGroupId={highlightedGroupId}
+                              highlightToolUseId={effectiveHighlightToolUseId}
+                              isSearchHighlight={isSearchHighlight}
+                              isNavigationHighlight={isNavigationHighlight}
+                              highlightColor={effectiveHighlightColor}
+                              registerChatItemRef={registerChatItemRef}
+                              registerAIGroupRef={registerAIGroupRefCombined}
+                              registerToolRef={registerToolRef}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    conversation.items.map((item) => (
+                      <ChatHistoryItem
+                        key={item.group.id}
+                        item={item}
+                        highlightedGroupId={highlightedGroupId}
+                        highlightToolUseId={effectiveHighlightToolUseId}
+                        isSearchHighlight={isSearchHighlight}
+                        isNavigationHighlight={isNavigationHighlight}
+                        highlightColor={effectiveHighlightColor}
+                        registerChatItemRef={registerChatItemRef}
+                        registerAIGroupRef={registerAIGroupRefCombined}
+                        registerToolRef={registerToolRef}
+                      />
+                    ))
+                  )}
                 </div>
-              ) : (
-                conversation.items.map((item) => (
-                  <ChatHistoryItem
-                    key={item.group.id}
-                    item={item}
-                    highlightedGroupId={highlightedGroupId}
-                    highlightToolUseId={effectiveHighlightToolUseId}
-                    isSearchHighlight={isSearchHighlight}
-                    isNavigationHighlight={isNavigationHighlight}
-                    highlightColor={effectiveHighlightColor}
-                    registerChatItemRef={registerChatItemRef}
-                    registerAIGroupRef={registerAIGroupRefCombined}
-                    registerToolRef={registerToolRef}
-                  />
-                ))
-              )}
+              </div>
             </div>
           </div>
+
+          {isSwimlaneVisible && <SwimlaneSurface />}
         </div>
 
         {/* Scroll to bottom button */}
-        {showScrollButton && (
+        {!isSwimlaneVisible && showScrollButton && (
           <button
             onClick={() => {
               scrollToBottom('smooth');

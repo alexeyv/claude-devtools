@@ -43,6 +43,8 @@ interface UseTabUIReturn {
   expandSubagentTrace: (subagentId: string) => void;
   isContextPanelVisible: boolean;
   setContextPanelVisible: (visible: boolean) => void;
+  isSwimlaneVisible: boolean;
+  setSwimlaneVisible: (visible: boolean) => void;
   selectedContextPhase: number | null;
   setSelectedContextPhase: (phase: number | null) => void;
   savedScrollTop: number | undefined;
@@ -82,6 +84,7 @@ export function useTabUI(): UseTabUIReturn {
     toggleSubagentTraceExpansionForTab,
     expandSubagentTraceForTab,
     setContextPanelVisibleForTab,
+    setSwimlaneVisibleForTab,
     setSelectedContextPhaseForTab,
     saveScrollPositionForTab,
     initTabUIState,
@@ -94,6 +97,7 @@ export function useTabUI(): UseTabUIReturn {
       toggleSubagentTraceExpansionForTab: s.toggleSubagentTraceExpansionForTab,
       expandSubagentTraceForTab: s.expandSubagentTraceForTab,
       setContextPanelVisibleForTab: s.setContextPanelVisibleForTab,
+      setSwimlaneVisibleForTab: s.setSwimlaneVisibleForTab,
       setSelectedContextPhaseForTab: s.setSelectedContextPhaseForTab,
       saveScrollPositionForTab: s.saveScrollPositionForTab,
       initTabUIState: s.initTabUIState,
@@ -187,6 +191,17 @@ export function useTabUI(): UseTabUIReturn {
     [tabId, setContextPanelVisibleForTab]
   );
 
+  // Swimlane - derive directly from tabState (reactive!)
+  const isSwimlaneVisible = tabState?.showSwimlane ?? false;
+
+  const setSwimlaneVisible = useCallback(
+    (visible: boolean): void => {
+      if (!tabId) return;
+      setSwimlaneVisibleForTab(tabId, visible);
+    },
+    [tabId, setSwimlaneVisibleForTab]
+  );
+
   // Context phase selection - derive from tabState
   const selectedContextPhase = tabState?.selectedContextPhase ?? null;
 
@@ -237,6 +252,10 @@ export function useTabUI(): UseTabUIReturn {
     // Context panel
     isContextPanelVisible,
     setContextPanelVisible,
+
+    // Swimlane
+    isSwimlaneVisible,
+    setSwimlaneVisible,
 
     // Context phase selection
     selectedContextPhase,

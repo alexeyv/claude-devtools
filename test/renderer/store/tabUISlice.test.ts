@@ -44,6 +44,7 @@ describe('tabUISlice', () => {
       expect(tabState?.expandedDisplayItemIds.size).toBe(0);
       expect(tabState?.expandedSubagentTraceIds.size).toBe(0);
       expect(tabState?.showContextPanel).toBe(false);
+      expect(tabState?.showSwimlane).toBe(false);
       expect(tabState?.savedScrollTop).toBeUndefined();
     });
 
@@ -245,6 +246,34 @@ describe('tabUISlice', () => {
     });
   });
 
+  describe('Swimlane visibility - per-tab isolation', () => {
+    it('should set swimlane visibility and lazily initialize missing tab state', () => {
+      expect(store.getState().isSwimlaneVisibleForTab('lazy-tab')).toBe(false);
+
+      store.getState().setSwimlaneVisibleForTab('lazy-tab', true);
+
+      expect(store.getState().tabUIStates.has('lazy-tab')).toBe(true);
+      expect(store.getState().isSwimlaneVisibleForTab('lazy-tab')).toBe(true);
+
+      store.getState().setSwimlaneVisibleForTab('lazy-tab', false);
+      expect(store.getState().isSwimlaneVisibleForTab('lazy-tab')).toBe(false);
+    });
+
+    it('should isolate swimlane visibility between tabs and clean it up with the tab', () => {
+      store.getState().initTabUIState('tab-1');
+      store.getState().initTabUIState('tab-2');
+
+      store.getState().setSwimlaneVisibleForTab('tab-1', true);
+
+      expect(store.getState().isSwimlaneVisibleForTab('tab-1')).toBe(true);
+      expect(store.getState().isSwimlaneVisibleForTab('tab-2')).toBe(false);
+
+      store.getState().cleanupTabUIState('tab-1');
+      expect(store.getState().isSwimlaneVisibleForTab('tab-1')).toBe(false);
+      expect(store.getState().isSwimlaneVisibleForTab('tab-2')).toBe(false);
+    });
+  });
+
   describe('Scroll position - per-tab isolation', () => {
     it('should save and retrieve scroll position', () => {
       store.getState().initTabUIState('tab-1');
@@ -287,11 +316,13 @@ describe('tabUISlice', () => {
       // Set some UI state
       store.getState().toggleAIGroupExpansionForTab(tabId, 'group-1');
       store.getState().setContextPanelVisibleForTab(tabId, true);
+      store.getState().setSwimlaneVisibleForTab(tabId, true);
       store.getState().saveScrollPositionForTab(tabId, 300);
 
       // Verify state
       expect(store.getState().isAIGroupExpandedForTab(tabId, 'group-1')).toBe(true);
       expect(store.getState().isContextPanelVisibleForTab(tabId)).toBe(true);
+      expect(store.getState().isSwimlaneVisibleForTab(tabId)).toBe(true);
       expect(store.getState().getScrollPositionForTab(tabId)).toBe(300);
 
       // Close tab (should cleanup UI state)
@@ -332,6 +363,7 @@ describe('tabUISlice', () => {
       store.getState().toggleAIGroupExpansionForTab(tab1Id, 'group-1');
       store.getState().toggleAIGroupExpansionForTab(tab2Id, 'group-2');
       store.getState().setContextPanelVisibleForTab(tab1Id, true);
+      store.getState().setSwimlaneVisibleForTab(tab1Id, true);
       store.getState().saveScrollPositionForTab(tab1Id, 100);
       store.getState().saveScrollPositionForTab(tab2Id, 500);
 
@@ -343,6 +375,8 @@ describe('tabUISlice', () => {
 
       expect(store.getState().isContextPanelVisibleForTab(tab1Id)).toBe(true);
       expect(store.getState().isContextPanelVisibleForTab(tab2Id)).toBe(false);
+      expect(store.getState().isSwimlaneVisibleForTab(tab1Id)).toBe(true);
+      expect(store.getState().isSwimlaneVisibleForTab(tab2Id)).toBe(false);
 
       expect(store.getState().getScrollPositionForTab(tab1Id)).toBe(100);
       expect(store.getState().getScrollPositionForTab(tab2Id)).toBe(500);
@@ -360,6 +394,7 @@ describe('tabUISlice', () => {
         false
       );
       expect(store.getState().isContextPanelVisibleForTab('nonexistent')).toBe(false);
+      expect(store.getState().isSwimlaneVisibleForTab('nonexistent')).toBe(false);
       expect(store.getState().getScrollPositionForTab('nonexistent')).toBeUndefined();
     });
 
