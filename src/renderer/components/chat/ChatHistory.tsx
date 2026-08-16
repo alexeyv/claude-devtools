@@ -91,13 +91,22 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   // Per-tab session data (each tab renders its own session independently)
   const tabData = useStore(
     useShallow((s) => {
-      const td = tabId ? s.tabSessionData[tabId] : null;
+      const td = tabId ? s.tabSessionData[tabId] : undefined;
+      if (td) {
+        return {
+          conversation: td.conversation,
+          conversationLoading: td.conversationLoading,
+          sessionContextStats: td.sessionContextStats,
+          sessionPhaseInfo: td.sessionPhaseInfo,
+          sessionDetail: td.sessionDetail,
+        };
+      }
       return {
-        conversation: td?.conversation ?? s.conversation,
-        conversationLoading: td?.conversationLoading ?? s.conversationLoading,
-        sessionContextStats: td?.sessionContextStats ?? s.sessionContextStats,
-        sessionPhaseInfo: td?.sessionPhaseInfo ?? s.sessionPhaseInfo,
-        sessionDetail: td?.sessionDetail ?? s.sessionDetail,
+        conversation: s.conversation,
+        conversationLoading: s.conversationLoading,
+        sessionContextStats: s.sessionContextStats,
+        sessionPhaseInfo: s.sessionPhaseInfo,
+        sessionDetail: s.sessionDetail,
       };
     })
   );
@@ -108,6 +117,8 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     sessionPhaseInfo,
     sessionDetail,
   } = tabData;
+  const activeSwimlane = sessionDetail?.swimlane;
+  const isSwimlaneActive = isSwimlaneVisible && Boolean(activeSwimlane);
 
   // State for Context button hover (local state OK - doesn't need per-tab isolation)
   const [isContextButtonHovered, setIsContextButtonHovered] = useState(false);
@@ -201,7 +212,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     (container: HTMLDivElement | null): void => {
       (scrollContainerRef as MutableRefObject<HTMLDivElement | null>).current = container;
       if (!container) return;
-      if (isSwimlaneVisible) {
+      if (isSwimlaneActive) {
         container.setAttribute('inert', '');
         container.setAttribute('aria-hidden', 'true');
       } else {
@@ -209,7 +220,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
         container.removeAttribute('aria-hidden');
       }
     },
-    [isSwimlaneVisible]
+    [isSwimlaneActive]
   );
 
   const cancelPendingScrollRestore = useCallback((): void => {
@@ -327,7 +338,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     isActiveTab: isThisTabActive,
     pendingNavigation,
     conversation,
-    conversationLoading: conversationLoading || isSwimlaneVisible,
+    conversationLoading: conversationLoading || isSwimlaneActive,
     consumeTabNavigation,
     tabId: effectiveTabId ?? '',
     aiGroupRefs,
@@ -367,7 +378,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       !isSearchActive ||
       !conversation ||
       shouldVirtualize ||
-      isSwimlaneVisible
+      isSwimlaneActive
     ) {
       emptyRenderedSyncCountRef.current = 0;
       return;
@@ -420,7 +431,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     isThisTabActive,
     isSearchActive,
     shouldVirtualize,
-    isSwimlaneVisible,
+    isSwimlaneActive,
     conversation,
     currentSearchIndex,
     searchMatches,
@@ -444,7 +455,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const [showScrollButton, setShowScrollButton] = useState(false);
 
   const checkScrollButton = useCallback(() => {
-    if (isSwimlaneVisible) {
+    if (isSwimlaneActive) {
       setShowScrollButton(false);
       return;
     }
@@ -452,7 +463,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     if (!container) return;
     const { scrollTop, scrollHeight, clientHeight } = container;
     setShowScrollButton(!isNearBottom(scrollTop, scrollHeight, clientHeight, SCROLL_THRESHOLD));
-  }, [isSwimlaneVisible]);
+  }, [isSwimlaneActive]);
 
   // Auto-follow when conversation updates, but only if the user was already near bottom.
   // This preserves manual reading position when the user scrolls up.
@@ -461,7 +472,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     threshold: SCROLL_THRESHOLD,
     smoothDuration: 300,
     autoBehavior: 'auto',
-    disabled: shouldDisableAutoScroll || isSwimlaneVisible,
+    disabled: shouldDisableAutoScroll || isSwimlaneActive,
     externalRef: scrollContainerRef,
     resetKey: effectiveTabId,
   });
@@ -474,12 +485,12 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   // Listen for session-refresh-scroll-bottom events (from Ctrl+R / refresh button)
   useEffect(() => {
     const handler = (): void => {
-      if (isSwimlaneVisible) return;
+      if (isSwimlaneActive) return;
       scrollToBottom('smooth');
     };
     window.addEventListener('session-refresh-scroll-bottom', handler);
     return () => window.removeEventListener('session-refresh-scroll-bottom', handler);
-  }, [isSwimlaneVisible, scrollToBottom]);
+  }, [isSwimlaneActive, scrollToBottom]);
 
   // Callback to register AI group refs (combines with visibility hook)
   const registerAIGroupRefCombined = useCallback(
@@ -936,8 +947,8 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
             className="flex-1 overflow-y-auto"
             style={{
               backgroundColor: 'var(--color-surface)',
-              visibility: isSwimlaneVisible ? 'hidden' : 'visible',
-              pointerEvents: isSwimlaneVisible ? 'none' : 'auto',
+              visibility: isSwimlaneActive ? 'hidden' : 'visible',
+              pointerEvents: isSwimlaneActive ? 'none' : 'auto',
             }}
             onScroll={checkScrollButton}
           >
@@ -1008,11 +1019,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
             </div>
           </div>
 
-          {isSwimlaneVisible && <SwimlaneSurface />}
+          {isSwimlaneActive && activeSwimlane && <SwimlaneSurface swimlane={activeSwimlane} />}
         </div>
 
         {/* Scroll to bottom button */}
-        {!isSwimlaneVisible && showScrollButton && (
+        {!isSwimlaneActive && showScrollButton && (
           <button
             onClick={() => {
               scrollToBottom('smooth');

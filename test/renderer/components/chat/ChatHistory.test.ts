@@ -7,6 +7,7 @@ import { TabUIProvider } from '../../../../src/renderer/contexts/TabUIContext';
 import { useStore } from '../../../../src/renderer/store';
 import { createMockElectronAPI } from '../../../mocks/electronAPI';
 
+import type { SessionDetail, SwimlaneModel } from '../../../../src/main/types';
 import type { ContextStats } from '../../../../src/renderer/types/contextInjection';
 import type { ChatItem, SessionConversation } from '../../../../src/renderer/types/groups';
 import type { Tab } from '../../../../src/renderer/types/tabs';
@@ -127,9 +128,44 @@ function makeTab(id: string): Tab {
   };
 }
 
+function makeSwimlaneModel(id = 'default'): SwimlaneModel {
+  const startTime = new Date('2026-08-16T12:00:00Z');
+  const endTime = new Date('2026-08-16T12:00:01Z');
+  return {
+    startTime,
+    endTime,
+    durationMs: 1000,
+    parentSegments: [
+      {
+        id: `${id}-work`,
+        type: 'work',
+        startTime,
+        endTime,
+        durationMs: 1000,
+        metrics: {
+          durationMs: 1000,
+          totalTokens: 10,
+          inputTokens: 4,
+          outputTokens: 1,
+          cacheReadTokens: 3,
+          cacheCreationTokens: 2,
+          messageCount: 1,
+        },
+      },
+    ],
+    hitlMarks: [],
+    childRows: [],
+  };
+}
+
+function makeSessionDetail(swimlane: SwimlaneModel): SessionDetail {
+  return { swimlane } as SessionDetail;
+}
+
 function setTabs(
   conversations: Record<string, SessionConversation>,
-  contextStats: Record<string, Map<string, ContextStats> | null> = {}
+  contextStats: Record<string, Map<string, ContextStats> | null> = {},
+  swimlanes: Record<string, SwimlaneModel> = {}
 ): void {
   const tabIds = Object.keys(conversations);
   const tabs = tabIds.map(makeTab);
@@ -154,7 +190,7 @@ function setTabs(
       Object.entries(conversations).map(([tabId, conversation]) => [
         tabId,
         {
-          sessionDetail: null,
+          sessionDetail: makeSessionDetail(swimlanes[tabId] ?? makeSwimlaneModel(tabId)),
           conversation,
           conversationLoading: false,
           sessionDetailLoading: false,
@@ -262,6 +298,83 @@ describe('ChatHistory swimlane', () => {
     expect(
       host.querySelector<HTMLElement>('[data-testid="turn-list-control-offset"]')?.style.paddingTop
     ).toBe('60px');
+  });
+
+  it('hands the selected tab projection to the surface only while the toggle is on', async () => {
+    const conversation = makeConversation([makeUserItem('user-1')]);
+    setTabs(
+      { 'tab-1': conversation, 'tab-2': conversation },
+      {},
+      {
+        'tab-1': makeSwimlaneModel('first-tab'),
+        'tab-2': makeSwimlaneModel('selected-tab'),
+      }
+    );
+    const host = await renderTab('tab-2');
+    const turnList = host.querySelector<HTMLElement>('[data-testid="turn-list-surface"]');
+
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-selected-tab-work"]')
+    ).toBeNull();
+    await click(button(host, 'Swimlane'));
+
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-selected-tab-work"]')
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-parent-segment-first-tab-work"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="swimlane-metrics-selected-tab-work"]')?.textContent
+    ).toBe('1.0s · 4 in · 3 cache · 2 write · 1 out');
+    expect(turnList?.getAttribute('inert')).toBe('');
+
+    await click(button(host, 'Swimlane'));
+    expect(host.querySelector('[data-testid="swimlane-surface"]')).toBeNull();
+    expect(turnList?.hasAttribute('inert')).toBe(false);
+  });
+
+  it('keeps the turn list visible and accessible when visibility is requested without a projection', async () => {
+    setTabs({ 'tab-1': makeConversation([makeUserItem('user-1')]) });
+    useStore.setState((state) => ({
+      sessionDetail: null,
+      tabSessionData: {
+        ...state.tabSessionData,
+        'tab-1': { ...state.tabSessionData['tab-1'], sessionDetail: null },
+      },
+    }));
+    const host = await renderTab('tab-1');
+    const turnList = host.querySelector<HTMLElement>('[data-testid="turn-list-surface"]');
+    if (!turnList) throw new Error('Missing turn list');
+
+    await click(button(host, 'Swimlane'));
+
+    expect(button(host, 'Swimlane').getAttribute('aria-pressed')).toBe('true');
+    expect(host.querySelector('[data-testid="swimlane-surface"]')).toBeNull();
+    expect(turnList.style.visibility).toBe('visible');
+    expect(turnList.style.pointerEvents).toBe('auto');
+    expect(turnList.hasAttribute('inert')).toBe(false);
+    expect(turnList.hasAttribute('aria-hidden')).toBe(false);
+  });
+
+  it('does not borrow a global projection when the existing tab record has null detail', async () => {
+    setTabs({ 'tab-1': makeConversation([makeUserItem('user-1')]) });
+    useStore.setState((state) => ({
+      sessionDetail: makeSessionDetail(makeSwimlaneModel('global-other-tab')),
+      tabSessionData: {
+        ...state.tabSessionData,
+        'tab-1': { ...state.tabSessionData['tab-1'], sessionDetail: null },
+      },
+    }));
+    const host = await renderTab('tab-1');
+    const turnList = host.querySelector<HTMLElement>('[data-testid="turn-list-surface"]');
+
+    await click(button(host, 'Swimlane'));
+
+    expect(host.querySelector('[data-testid="swimlane-surface"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-global-other-tab-work"]')
+    ).toBeNull();
+    expect(turnList?.style.visibility).toBe('visible');
+    expect(turnList?.hasAttribute('inert')).toBe(false);
   });
 
   it('keeps a stateful turn mounted and preserves list scroll across toggles', async () => {
