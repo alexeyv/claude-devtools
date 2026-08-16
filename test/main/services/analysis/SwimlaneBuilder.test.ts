@@ -84,6 +84,7 @@ function segmentTypes(model: ReturnType<typeof buildSwimlane>): string[] {
 describe('buildSwimlane', () => {
   it('projects exact parent and existing-card child targets without timing fallbacks', () => {
     const parentMessage = message('owned-work', 0, {
+      requestId: 'owned-request',
       usage: { input_tokens: 1, output_tokens: 1 },
     });
     const root = process('root-card', 1, 3, { parentTaskId: 'spawn-root' });
@@ -104,10 +105,9 @@ describe('buildSwimlane', () => {
 
     const model = buildSwimlane([chunk], [root, nestedWithCard, noCard], [parentMessage]);
 
-    expect(model.parentSegments.find((segment) => segment.type === 'work')?.target).toEqual({
-      kind: 'turn',
-      groupId: chunk.id,
-    });
+    expect(
+      model.parentSegments.find((segment) => segment.type === 'assistant-output')?.target
+    ).toEqual({ kind: 'turn', groupId: chunk.id });
     expect(model.childRows.find((row) => row.id === root.id)?.activations[0].target).toEqual({
       kind: 'subagent',
       groupId: chunk.id,
@@ -209,7 +209,7 @@ describe('buildSwimlane', () => {
     ).toBeUndefined();
   });
 
-  it('keeps production at request-group time and classifies child-only silence', () => {
+  it('keeps assistant output at request-group time and leaves unlinked child silence unattributed', () => {
     const parent = [
       message('work-1-stream', 0, {
         requestId: 'request-1',
@@ -232,9 +232,9 @@ describe('buildSwimlane', () => {
 
     expect(model.startTime).toEqual(at(0));
     expect(model.endTime).toEqual(at(6));
-    expect(segmentTypes(model)).toEqual(['work', 'idle', 'child-wait', 'idle', 'work']);
-    const requestWork = model.parentSegments.find((segment) => segment.requestId === 'request-1');
-    expect(requestWork).toMatchObject({
+    expect(segmentTypes(model)).toEqual(['assistant-output', 'unattributed']);
+    const requestOutput = model.parentSegments.find((segment) => segment.requestId === 'request-1');
+    expect(requestOutput).toMatchObject({
       startTime: at(0),
       endTime: at(1),
       durationMs: 1000,
@@ -245,6 +245,221 @@ describe('buildSwimlane', () => {
         cacheCreationTokens: 13,
       },
     });
+  });
+
+  it('derives observed model response and exact tool execution from causal message links', () => {
+    const toolCall: ToolCall = {
+      id: 'read-1',
+      name: 'Read',
+      input: { file_path: '/tmp/example' },
+      isTask: false,
+    };
+    const messages = [
+      message('submission', 0, { type: 'user', content: 'start' }),
+      message('request-one-first', 2, {
+        parentUuid: 'submission',
+        requestId: 'request-one',
+      }),
+      message('request-one-last', 4, {
+        parentUuid: 'submission',
+        requestId: 'request-one',
+        toolCalls: [toolCall],
+      }),
+      message('read-result', 4.005, {
+        type: 'user',
+        isMeta: true,
+        parentUuid: 'request-one-last',
+        toolResults: [{ toolUseId: toolCall.id, content: 'done', isError: false }],
+      }),
+      message('request-two-first', 6, {
+        parentUuid: 'read-result',
+        requestId: 'request-two',
+      }),
+    ];
+
+    const model = buildSwimlane([], [], messages);
+
+    expect(
+      model.evidence.map((evidence) => [evidence.type, evidence.startTime, evidence.endTime])
+    ).toEqual([
+      ['model-response', at(0), at(2)],
+      ['assistant-output', at(2), at(4)],
+      ['tool-execution', at(4), at(4.005)],
+      ['model-response', at(4.005), at(6)],
+      ['assistant-output', at(6), at(6)],
+    ]);
+    expect(model.evidence.find((evidence) => evidence.toolUseId === toolCall.id)).toMatchObject({
+      durationMs: 5,
+      startMessageId: 'request-one-last',
+      endMessageId: 'read-result',
+    });
+    expect(
+      model.parentSegments.map((segment) => [segment.type, segment.startTime, segment.endTime])
+    ).toEqual([
+      ['model-response', at(0), at(2)],
+      ['assistant-output', at(2), at(4)],
+      ['tool-execution', at(4), at(4.005)],
+      ['model-response', at(4.005), at(6)],
+      ['assistant-output', at(6), at(6)],
+    ]);
+  });
+
+  it('attributes linked child activity once while retaining the exact enclosing tool span', () => {
+    const spawn = spawnCall('linked-child');
+    const child = process('linked-process', 1, 3, { parentTaskId: spawn.id });
+    const model = buildSwimlane(
+      [],
+      [child],
+      [
+        message('spawn-call', 0, { requestId: 'spawn-request', toolCalls: [spawn] }),
+        message('spawn-result', 4, {
+          type: 'user',
+          isMeta: true,
+          sourceToolUseID: spawn.id,
+          toolResults: [{ toolUseId: spawn.id, content: 'done', isError: false }],
+        }),
+      ]
+    );
+
+    expect(
+      model.parentSegments
+        .filter((segment) => segment.durationMs > 0)
+        .map((segment) => [segment.type, segment.startTime, segment.endTime])
+    ).toEqual([
+      ['tool-execution', at(0), at(1)],
+      ['child-wait', at(1), at(3)],
+      ['tool-execution', at(3), at(4)],
+    ]);
+    expect(model.evidence.find((evidence) => evidence.toolUseId === spawn.id)).toMatchObject({
+      type: 'tool-execution',
+      durationMs: 4000,
+    });
+    expect(model.parentSegments.reduce((sum, segment) => sum + segment.durationMs, 0)).toBe(4000);
+  });
+
+  it('requires a matched task span, clamps child bounds, and rejects disconnected nesting', () => {
+    const matched = spawnCall('matched-spawn');
+    const identitySpawn = spawnCall('identity-spawn');
+    const unmatched = spawnCall('unmatched-spawn');
+    const nestedSpawn = spawnCall('disconnected-nested-spawn');
+    const clamped = process('clamped-child', -2, 6, { parentTaskId: matched.id });
+    const identityChild = process('identity-child', 1, 2);
+    const unmatchedChild = process('unmatched-child', 5, 7, { parentTaskId: unmatched.id });
+    const invalidChild = process('invalid-linked-child', 0, 0, {
+      parentTaskId: matched.id,
+      startTime: new Date(Number.NaN),
+      endTime: new Date(Number.NaN),
+    });
+    const disconnectedOwner = process('disconnected-owner', 0, 3, {
+      messages: [
+        message('disconnected-call', 0, {
+          isSidechain: true,
+          toolCalls: [nestedSpawn],
+        }),
+        message('disconnected-result', 3, {
+          type: 'user',
+          isMeta: true,
+          isSidechain: true,
+          sourceToolUseID: nestedSpawn.id,
+          toolResults: [{ toolUseId: nestedSpawn.id, content: 'done', isError: false }],
+        }),
+      ],
+    });
+    const disconnectedNested = process('disconnected-nested', 1, 2, {
+      parentTaskId: nestedSpawn.id,
+    });
+    const model = buildSwimlane(
+      [],
+      [clamped, identityChild, unmatchedChild, invalidChild, disconnectedOwner, disconnectedNested],
+      [
+        message('matched-call', 0, { toolCalls: [matched, identitySpawn] }),
+        message('matched-result', 4, {
+          type: 'user',
+          isMeta: true,
+          sourceToolUseID: matched.id,
+          toolResults: [{ toolUseId: matched.id, content: 'done', isError: false }],
+        }),
+        message('identity-result', 4, {
+          type: 'user',
+          isMeta: true,
+          sourceToolUseID: identitySpawn.id,
+          toolUseResult: { agentId: identityChild.id, toolUseId: identitySpawn.id },
+        }),
+        message('unmatched-call', 5, { toolCalls: [unmatched] }),
+      ]
+    );
+
+    expect(model.evidence.filter((evidence) => evidence.type === 'child-wait')).toEqual([
+      expect.objectContaining({
+        processId: clamped.id,
+        toolUseId: matched.id,
+        startTime: at(0),
+        endTime: at(4),
+        durationMs: 4000,
+      }),
+      expect.objectContaining({
+        processId: identityChild.id,
+        toolUseId: identitySpawn.id,
+        startTime: at(1),
+        endTime: at(2),
+        durationMs: 1000,
+      }),
+    ]);
+  });
+
+  it('does not treat parent-linked command output as a human resume or model submission', () => {
+    const model = buildSwimlane(
+      [],
+      [],
+      [
+        message('prior-assistant', 0, { requestId: 'prior' }),
+        message('command-output', 5, {
+          type: 'user',
+          content: '<local-command-stdout>done</local-command-stdout>',
+          parentUuid: 'prior-assistant',
+        }),
+        message('after-command', 7, {
+          requestId: 'after-command',
+          parentUuid: 'command-output',
+        }),
+      ]
+    );
+
+    expect(
+      model.evidence.filter(
+        (evidence) => evidence.type === 'human-wait' || evidence.type === 'model-response'
+      )
+    ).toEqual([]);
+  });
+
+  it('does not stretch unmatched tools or manufacture response latency without a parent link', () => {
+    const unmatched: ToolCall = {
+      id: 'unmatched',
+      name: 'Read',
+      input: {},
+      isTask: false,
+    };
+    const model = buildSwimlane(
+      [],
+      [],
+      [
+        message('orphan-request', 1, {
+          requestId: 'orphan',
+          toolCalls: [unmatched],
+        }),
+        message('axis-end', 5, { type: 'system' }),
+      ]
+    );
+
+    expect(model.evidence.map((evidence) => evidence.type)).toEqual(['assistant-output']);
+    expect(
+      model.parentSegments.some(
+        (segment) =>
+          segment.type === 'unattributed' &&
+          segment.startTime.getTime() === at(1).getTime() &&
+          segment.endTime.getTime() === at(5).getTime()
+      )
+    ).toBe(true);
   });
 
   it('targets the exact owner for nonzero ranged work with same-request responses', () => {
@@ -284,7 +499,7 @@ describe('buildSwimlane', () => {
     });
   });
 
-  it('pairs explicit AskUserQuestion marks and leaves unanswered asks open to the axis end', () => {
+  it('pairs explicit AskUserQuestion marks without stretching an unanswered ask', () => {
     const askCall = {
       id: 'ask-1',
       name: 'AskUserQuestion',
@@ -310,7 +525,7 @@ describe('buildSwimlane', () => {
     expect(
       paired.parentSegments.find(
         (segment) =>
-          segment.type === 'HITL-wait' &&
+          segment.type === 'human-wait' &&
           segment.startTime.getTime() === at(0).getTime() &&
           segment.endTime.getTime() === at(5).getTime()
       )
@@ -325,50 +540,60 @@ describe('buildSwimlane', () => {
       ]
     );
     expect(unanswered.hitlMarks).toHaveLength(1);
-    expect(unanswered.parentSegments.some((segment) => segment.type === 'HITL-wait')).toBe(true);
+    expect(unanswered.parentSegments.some((segment) => segment.type === 'human-wait')).toBe(false);
+    expect(unanswered.parentSegments.some((segment) => segment.type === 'unattributed')).toBe(true);
     expect(unanswered.endTime).toEqual(at(9));
   });
 
-  it('uses HITL-wait before child-wait, then resumes child-wait after the answer', () => {
+  it('uses human wait before child wait, then resumes child wait after the answer', () => {
     const ask = {
       id: 'ask-overlap',
       name: 'AskUserQuestion',
       input: {},
       isTask: false,
     };
+    const childSpawn = spawnCall('child-spawn');
     const model = buildSwimlane(
       [],
-      [process('child-overlap', 1, 4)],
+      [process('child-overlap', 1, 4, { parentTaskId: childSpawn.id })],
       [
-        message('ask', 0, { toolCalls: [ask] }),
+        message('ask', 0, { toolCalls: [ask, childSpawn] }),
         message('answer', 3, {
           type: 'user',
           isMeta: true,
           content: [{ type: 'tool_result', tool_use_id: ask.id, content: 'done' }],
           toolResults: [{ toolUseId: ask.id, content: 'done', isError: false }],
         }),
+        message('child-result', 4, {
+          type: 'user',
+          isMeta: true,
+          sourceToolUseID: childSpawn.id,
+          toolResults: [{ toolUseId: childSpawn.id, content: 'done', isError: false }],
+        }),
         message('later-work', 5),
       ]
     );
 
-    const waitSegments = model.parentSegments.filter((segment) => segment.type !== 'work');
+    const waitSegments = model.parentSegments.filter(
+      (segment) => segment.type !== 'assistant-output'
+    );
     expect(
       waitSegments.map((segment) => [segment.type, segment.startTime, segment.endTime])
     ).toEqual([
-      ['HITL-wait', at(0), at(3)],
+      ['human-wait', at(0), at(3)],
       ['child-wait', at(3), at(4)],
-      ['idle', at(4), at(5)],
+      ['unattributed', at(4), at(5)],
     ]);
   });
 
-  it('infers resume waits only after prior work and otherwise classifies silence as idle', () => {
+  it('classifies only parent-linked later user resumes as human wait', () => {
     const model = buildSwimlane(
       [],
       [],
       [
         message('initial-user', -1, { type: 'user', content: 'start' }),
         message('prior-work', 0),
-        message('resume', 5, { type: 'user', content: 'continue' }),
+        message('resume', 5, { type: 'user', content: 'continue', parentUuid: 'prior-work' }),
         message('next-work', 7),
         message('final-axis', 10, { type: 'system' }),
       ]
@@ -378,7 +603,7 @@ describe('buildSwimlane', () => {
     expect(
       model.parentSegments.some(
         (segment) =>
-          segment.type === 'HITL-wait' &&
+          segment.type === 'human-wait' &&
           segment.startTime.getTime() === at(0).getTime() &&
           segment.endTime.getTime() === at(5).getTime()
       )
@@ -386,8 +611,8 @@ describe('buildSwimlane', () => {
     expect(
       model.parentSegments.some(
         (segment) =>
-          segment.type === 'idle' &&
-          segment.startTime.getTime() === at(7).getTime() &&
+          segment.type === 'unattributed' &&
+          segment.startTime.getTime() === at(5).getTime() &&
           segment.endTime.getTime() === at(10).getTime()
       )
     ).toBe(true);
@@ -482,9 +707,9 @@ describe('buildSwimlane', () => {
     expect(
       model.parentSegments.some(
         (segment) =>
-          segment.type === 'idle' &&
-          segment.startTime.getTime() === at(6).getTime() &&
-          segment.endTime.getTime() === at(8).getTime()
+          segment.type === 'unattributed' &&
+          segment.startTime.getTime() === at(1.1).getTime() &&
+          segment.endTime.getTime() === at(9).getTime()
       )
     ).toBe(true);
     expect(JSON.parse(JSON.stringify(model))).not.toHaveProperty('childRows.0.messages');
@@ -690,7 +915,7 @@ describe('buildSwimlane', () => {
     ]);
   });
 
-  it('subtracts collectively covered Ask intervals from inferred resume waits', () => {
+  it('requires a parent link for later resumes and keeps overlapping human evidence exact', () => {
     const askOne = { id: 'cover-one', name: 'AskUserQuestion', input: {}, isTask: false };
     const askTwo = { id: 'cover-two', name: 'AskUserQuestion', input: {}, isTask: false };
     const covered = buildSwimlane(
@@ -713,7 +938,7 @@ describe('buildSwimlane', () => {
         message('resume', 5, { type: 'user', content: 'continue' }),
       ]
     );
-    expect(covered.hitlMarks.filter((mark) => mark.source === 'inferred-resume')).toEqual([]);
+    expect(covered.hitlMarks.filter((mark) => mark.source === 'linked-resume')).toEqual([]);
 
     const partialAsk = { id: 'partial', name: 'AskUserQuestion', input: {}, isTask: false };
     const partial = buildSwimlane(
@@ -727,22 +952,29 @@ describe('buildSwimlane', () => {
           isMeta: true,
           sourceToolUseID: partialAsk.id,
         }),
-        message('partial-resume', 5, { type: 'user', content: 'continue' }),
+        message('partial-resume', 5, {
+          type: 'user',
+          content: 'continue',
+          parentUuid: 'partial-work',
+        }),
       ]
     );
     expect(
       partial.hitlMarks
-        .filter((mark) => mark.source === 'inferred-resume')
+        .filter((mark) => mark.source === 'linked-resume')
         .map((mark) => [mark.type, mark.timestamp])
     ).toEqual([
       ['resume-start', at(0)],
-      ['resume', at(2)],
-      ['resume-start', at(4)],
       ['resume', at(5)],
     ]);
+    expect(
+      partial.evidence.find(
+        (evidence) => evidence.id === 'human-resume-partial-work-partial-resume'
+      )
+    ).toMatchObject({ type: 'human-wait', durationMs: 5000 });
   });
 
-  it('uses the greatest preceding work end and emits unique split-work metrics once', () => {
+  it('uses linked output boundaries and emits unique split-output metrics once', () => {
     const model = buildSwimlane(
       [],
       [],
@@ -763,12 +995,24 @@ describe('buildSwimlane', () => {
           requestId: 'outer',
           usage: { input_tokens: 4, output_tokens: 4 },
         }),
-        message('resume-after-overlap', 8, { type: 'user', content: 'resume' }),
-        message('point-one', 9, { usage: { input_tokens: 1, output_tokens: 0 } }),
-        message('point-two', 9, { usage: { input_tokens: 2, output_tokens: 0 } }),
+        message('resume-after-overlap', 8, {
+          type: 'user',
+          content: 'resume',
+          parentUuid: 'outer-end',
+        }),
+        message('point-one', 9, {
+          requestId: 'point-one',
+          usage: { input_tokens: 1, output_tokens: 0 },
+        }),
+        message('point-two', 9, {
+          requestId: 'point-two',
+          usage: { input_tokens: 2, output_tokens: 0 },
+        }),
       ]
     );
-    const workSegments = model.parentSegments.filter((segment) => segment.type === 'work');
+    const outputSegments = model.parentSegments.filter(
+      (segment) => segment.type === 'assistant-output'
+    );
     const inferredStart = model.hitlMarks.find((mark) => mark.type === 'resume-start');
 
     expect(inferredStart?.timestamp).toEqual(at(7));
@@ -776,12 +1020,12 @@ describe('buildSwimlane', () => {
       model.parentSegments.length
     );
     expect(
-      workSegments.filter((segment) => segment.requestId === 'outer' && segment.metrics)
+      outputSegments.filter((segment) => segment.requestId === 'outer' && segment.metrics)
     ).toHaveLength(1);
     expect(
-      workSegments.filter((segment) => segment.requestId === 'inner' && segment.metrics)
+      outputSegments.filter((segment) => segment.requestId === 'inner' && segment.metrics)
     ).toHaveLength(1);
-    const points = workSegments.filter(
+    const points = outputSegments.filter(
       (segment) => segment.startTime.getTime() === at(9).getTime() && segment.durationMs === 0
     );
     expect(points).toHaveLength(2);
@@ -853,9 +1097,9 @@ describe('buildSwimlane', () => {
     expect(
       model.parentSegments.some(
         (segment) =>
-          segment.type === 'idle' &&
-          segment.startTime.getTime() === at(2).getTime() &&
-          segment.endTime.getTime() === at(5).getTime()
+          segment.type === 'unattributed' &&
+          segment.startTime.getTime() === at(1).getTime() &&
+          segment.endTime.getTime() === at(6).getTime()
       )
     ).toBe(true);
   });

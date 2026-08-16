@@ -491,6 +491,81 @@ describe('ChunkBuilder', () => {
       expect(detail.swimlane.childRows[0].activations[0].processId).toBe('resolved-child');
       expect(JSON.stringify(serializedProjection)).not.toContain('child-message');
     });
+
+    it('serializes exact causal evidence with request metrics, targets, and tool duration', () => {
+      const base = new Date('2026-08-16T10:00:00.000Z').getTime();
+      const session = {
+        id: 'session-with-evidence',
+        projectId: 'project-1',
+        projectPath: '/path/to/project',
+        createdAt: base,
+        hasSubagents: false,
+        messageCount: 1,
+      };
+      const messages = [
+        createMessage({
+          uuid: 'submission',
+          timestamp: new Date(base),
+          type: 'user',
+          content: 'start',
+        }),
+        createMessage({
+          uuid: 'assistant-first',
+          parentUuid: 'submission',
+          timestamp: new Date(base + 2000),
+          type: 'assistant',
+          requestId: 'request-1',
+          content: [{ type: 'text', text: 'working' }],
+          usage: { input_tokens: 8, output_tokens: 2 },
+        }),
+        createMessage({
+          uuid: 'assistant-tool',
+          parentUuid: 'submission',
+          timestamp: new Date(base + 4000),
+          type: 'assistant',
+          requestId: 'request-1',
+          content: [],
+          toolCalls: [{ id: 'read-1', name: 'Read', input: {}, isTask: false }],
+          usage: { input_tokens: 8, output_tokens: 4 },
+        }),
+        createMessage({
+          uuid: 'read-result',
+          parentUuid: 'assistant-tool',
+          timestamp: new Date(base + 4005),
+          type: 'user',
+          isMeta: true,
+          content: [{ type: 'tool_result', tool_use_id: 'read-1', content: 'done' }],
+          toolResults: [{ toolUseId: 'read-1', content: 'done', isError: false }],
+        }),
+      ];
+
+      const serialized = JSON.parse(
+        JSON.stringify(builder.buildSessionDetail(session, messages, []).swimlane)
+      ) as {
+        evidence: Array<{
+          durationMs: number;
+          metrics?: { inputTokens: number; outputTokens: number };
+          requestId?: string;
+          target?: { kind: string; groupId: string };
+          toolUseId?: string;
+          type: string;
+        }>;
+      };
+
+      expect(serialized.evidence.find((evidence) => evidence.toolUseId === 'read-1')).toMatchObject(
+        {
+          type: 'tool-execution',
+          durationMs: 5,
+        }
+      );
+      expect(
+        serialized.evidence.find((evidence) => evidence.type === 'assistant-output')
+      ).toMatchObject({
+        requestId: 'request-1',
+        metrics: { inputTokens: 8, outputTokens: 4 },
+        target: { kind: 'turn' },
+      });
+    });
   });
 
   describe('buildWaterfallData', () => {

@@ -194,10 +194,11 @@ function makeSwimlaneModel(id = 'default'): SwimlaneModel {
     startTime,
     endTime,
     durationMs: 1000,
+    evidence: [],
     parentSegments: [
       {
         id: `${id}-work`,
-        type: 'work',
+        type: 'assistant-output',
         startTime,
         endTime,
         durationMs: 1000,
@@ -225,7 +226,7 @@ function makeChildTargetSwimlane(groupId: string, child: Process): SwimlaneModel
       id: 'resume-boundary',
       type: 'resume',
       timestamp: model.endTime,
-      source: 'inferred-resume',
+      source: 'linked-resume',
     },
   ];
   model.childRows = [
@@ -427,7 +428,7 @@ describe('ChatHistory swimlane', () => {
       host
         .querySelector('[data-testid="swimlane-parent-segment-selected-tab-work"]')
         ?.getAttribute('aria-label')
-    ).toBe('Parent work');
+    ).toBe('Parent assistant output');
     expect(turnList?.getAttribute('inert')).toBe('');
 
     await click(button(host, 'Swimlane'));
@@ -759,7 +760,7 @@ describe('ChatHistory swimlane', () => {
       },
       {
         id: 'checkpoint-gap',
-        type: 'HITL-wait',
+        type: 'human-wait',
         startTime: checkpointTime,
         endTime: resumeTime,
         durationMs: 400,
@@ -776,13 +777,13 @@ describe('ChatHistory swimlane', () => {
         id: 'checkpoint-start',
         type: 'resume-start',
         timestamp: checkpointTime,
-        source: 'inferred-resume',
+        source: 'linked-resume',
       },
       {
         id: 'checkpoint-resume',
         type: 'resume',
         timestamp: resumeTime,
-        source: 'inferred-resume',
+        source: 'linked-resume',
       },
     ];
     setTabs(

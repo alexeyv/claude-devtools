@@ -73,8 +73,31 @@ export interface Process {
 // Swimlane Projection Types
 // =============================================================================
 
-/** Classification for every interval on the parent lane. */
-export type SwimlaneSegmentType = 'work' | 'HITL-wait' | 'child-wait' | 'idle';
+/** Evidence-based classification for every interval on the parent lane. */
+export type SwimlaneSegmentType =
+  | 'model-response'
+  | 'assistant-output'
+  | 'tool-execution'
+  | 'child-wait'
+  | 'human-wait'
+  | 'unattributed';
+
+/** Exact timestamped source range retained independently of attributed slices. */
+export interface SwimlaneEvidenceInterval {
+  id: string;
+  type: Exclude<SwimlaneSegmentType, 'unattributed'>;
+  startTime: Date;
+  endTime: Date;
+  durationMs: number;
+  requestId?: string;
+  toolUseId?: string;
+  processId?: string;
+  startMessageId?: string;
+  endMessageId?: string;
+  label?: string;
+  metrics?: SessionMetrics;
+  target?: SwimlaneNavigationTarget;
+}
 
 /** Exact existing microscope destination projected by the main process. */
 export type SwimlaneNavigationTarget =
@@ -97,13 +120,15 @@ export interface SwimlaneParentSegment {
   startTime: Date;
   endTime: Date;
   durationMs: number;
-  /** Present only for producing assistant request groups. */
+  /** Exact causal range selected for this attributed slice. */
+  evidenceId?: string;
+  /** Present only for assistant request groups. */
   metrics?: SessionMetrics;
   /** API request identity, when Claude emitted one for the group. */
   requestId?: string;
   /** Existing chunk microscope target for later renderer navigation. */
   chunkId?: string;
-  /** Existing turn microscope destination, absent for non-work/silent intervals. */
+  /** Existing turn microscope destination, absent for unsupported/suspension intervals. */
   target?: SwimlaneNavigationTarget;
 }
 
@@ -112,7 +137,7 @@ export interface SwimlaneHitlMark {
   id: string;
   type: 'ask' | 'answer' | 'resume-start' | 'resume';
   timestamp: Date;
-  source: 'explicit-ask' | 'inferred-resume';
+  source: 'explicit-ask' | 'linked-resume';
   toolUseId?: string;
 }
 
@@ -142,6 +167,8 @@ export interface SwimlaneModel {
   startTime: Date;
   endTime: Date;
   durationMs: number;
+  /** Complete exact evidence, including ranges hidden by overlap precedence or pixel scale. */
+  evidence: SwimlaneEvidenceInterval[];
   parentSegments: SwimlaneParentSegment[];
   hitlMarks: SwimlaneHitlMark[];
   childRows: SwimlaneChildRow[];

@@ -14,7 +14,7 @@ import type { CSSProperties, FocusEvent, MouseEvent, RefObject } from 'react';
 
 const LABEL_COLUMN_WIDTH = 184;
 const MIN_CLOCK_WIDTH = 720;
-const MIN_INTERVAL_WIDTH = 2;
+const MIN_MEANINGFUL_INTERVAL_WIDTH = 1;
 const ROW_HEIGHT = 34;
 const TRACK_INSET = 6;
 const LABEL_HORIZONTAL_PADDING = 8;
@@ -23,6 +23,7 @@ const DEPTH_INDENT = 12;
 const TOOLTIP_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 const MIN_HITL_TICK_GAP = 3;
+const SUPPRESSED_DETAIL_LIMIT = 50;
 
 interface SwimlaneSurfaceProps {
   swimlane: SwimlaneModel;
@@ -40,6 +41,13 @@ interface ActiveInterval {
   identity: string;
   key: string;
   trigger: HTMLElement;
+}
+
+interface SuppressedInterval {
+  details: IntervalDetails;
+  id: string;
+  identity: string;
+  target?: SwimlaneNavigationTarget;
 }
 
 interface SwimlaneIntervalProps {
@@ -87,8 +95,7 @@ function intervalStyle(
 
   return {
     left: `${left}%`,
-    width: width === 0 ? `${MIN_INTERVAL_WIDTH}px` : `${width}%`,
-    minWidth: `${MIN_INTERVAL_WIDTH}px`,
+    width: `${width}%`,
   };
 }
 
@@ -99,10 +106,10 @@ function intervalPixelWidth(
   axisDuration: number,
   clockWidth: number
 ): number {
-  if (axisDuration <= 0) return MIN_INTERVAL_WIDTH;
+  if (axisDuration <= 0) return 0;
   const start = percentage(startTime, axisStart, axisDuration);
   const end = percentage(endTime, axisStart, axisDuration);
-  return Math.max(MIN_INTERVAL_WIDTH, ((end - start) / 100) * clockWidth);
+  return Math.max(0, ((end - start) / 100) * clockWidth);
 }
 
 function exactNumber(value: number): string {
@@ -111,11 +118,23 @@ function exactNumber(value: number): string {
 
 function segmentTreatment(segment: SwimlaneParentSegment): CSSProperties {
   switch (segment.type) {
-    case 'work':
+    case 'assistant-output':
       return {
         backgroundColor: 'var(--context-btn-active-bg)',
         border: '1px solid var(--color-border-emphasis)',
         color: 'var(--context-btn-active-text)',
+      };
+    case 'model-response':
+      return {
+        backgroundColor: 'var(--card-header-hover)',
+        border: '1px solid var(--color-border-emphasis)',
+        color: 'var(--card-text-lighter)',
+      };
+    case 'tool-execution':
+      return {
+        backgroundColor: 'var(--color-surface-raised)',
+        border: '1px solid var(--color-border-emphasis)',
+        color: 'var(--color-text-secondary)',
       };
     case 'child-wait':
       return {
@@ -124,13 +143,13 @@ function segmentTreatment(segment: SwimlaneParentSegment): CSSProperties {
           'repeating-linear-gradient(135deg, transparent 0, transparent 3px, var(--color-border) 3px, var(--color-border) 5px)',
         border: '1px solid var(--color-border-emphasis)',
       };
-    case 'HITL-wait':
+    case 'human-wait':
       return {
         backgroundColor: 'var(--warning-bg)',
         border: '1px solid var(--warning-border)',
         color: 'var(--warning-text)',
       };
-    case 'idle':
+    case 'unattributed':
       return {
         backgroundColor: 'transparent',
         border: '1px solid var(--color-border-subtle)',
@@ -155,10 +174,27 @@ function truncateLabel(label: string): string {
   return parts.length > 60 ? `${parts.slice(0, 60).join('')}…` : label;
 }
 
-function workIdentity(segment: SwimlaneParentSegment): string {
+function requestIdentity(segment: SwimlaneParentSegment): string {
   if (segment.requestId) return `request:${segment.requestId}`;
   if (segment.chunkId) return `chunk:${segment.chunkId}`;
   return `id:${segment.id.replace(/-part-\d+$/, '')}`;
+}
+
+function segmentLabel(type: SwimlaneParentSegment['type']): string {
+  switch (type) {
+    case 'model-response':
+      return 'model response';
+    case 'assistant-output':
+      return 'assistant output';
+    case 'tool-execution':
+      return 'tool execution';
+    case 'child-wait':
+      return 'child wait';
+    case 'human-wait':
+      return 'human wait';
+    case 'unattributed':
+      return 'unattributed';
+  }
 }
 
 function intervalIdentity(namespace: 'activation' | 'parent', ...parts: string[]): string {
@@ -190,12 +226,9 @@ function useFittedLabel(
       const contentWidth =
         trigger.clientWidth || Math.max(0, renderedTriggerWidth - horizontalBorderWidth);
       const renderedLabelWidth =
-        labelElement.getBoundingClientRect().width ||
-        labelElement.scrollWidth ||
-        label.length * 6;
+        labelElement.getBoundingClientRect().width || labelElement.scrollWidth || label.length * 6;
       const fallbackContentWidth = Math.max(0, fallbackWidth - horizontalBorderWidth);
-      const availableWidth =
-        (contentWidth || fallbackContentWidth) - LABEL_HORIZONTAL_PADDING * 2;
+      const availableWidth = (contentWidth || fallbackContentWidth) - LABEL_HORIZONTAL_PADDING * 2;
       setFits(availableWidth >= renderedLabelWidth);
     };
 
@@ -383,16 +416,13 @@ function layoutHitlMarks(
       sourceIndex,
     }))
     .sort(
-      (left, right) =>
-        left.idealPixel - right.idealPixel || left.sourceIndex - right.sourceIndex
+      (left, right) => left.idealPixel - right.idealPixel || left.sourceIndex - right.sourceIndex
     );
   const minimumPixel = Math.min(1, clockWidth / 2);
   const maximumPixel = Math.max(minimumPixel, clockWidth - minimumPixel);
   const availableWidth = Math.max(0, maximumPixel - minimumPixel);
   const tickGap =
-    ordered.length <= 1
-      ? 0
-      : Math.min(MIN_HITL_TICK_GAP, availableWidth / (ordered.length - 1));
+    ordered.length <= 1 ? 0 : Math.min(MIN_HITL_TICK_GAP, availableWidth / (ordered.length - 1));
   const reservedPixels = ordered.map(({ idealPixel }, index) =>
     Math.max(clamp(idealPixel, minimumPixel, maximumPixel), minimumPixel + index * tickGap)
   );
@@ -585,10 +615,10 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       ? connectedHoveredInterval
       : connectedFocusedInterval;
   const activeKey = activeInterval?.key ?? null;
-  const workMetrics = new Map<string, SessionMetrics>();
+  const requestMetrics = new Map<string, SessionMetrics>();
   for (const segment of swimlane.parentSegments) {
-    if (segment.type === 'work' && segment.metrics) {
-      workMetrics.set(workIdentity(segment), segment.metrics);
+    if (segment.type === 'assistant-output' && segment.metrics) {
+      requestMetrics.set(requestIdentity(segment), segment.metrics);
     }
   }
 
@@ -639,6 +669,75 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     tooltipId,
   };
   const hitlLayout = layoutHitlMarks(swimlane.hitlMarks, axisStart, axisDuration, clockWidth);
+  const visibleParentSegments = swimlane.parentSegments.filter(
+    (segment) =>
+      intervalPixelWidth(segment.startTime, segment.endTime, axisStart, axisDuration, clockWidth) >=
+      MIN_MEANINGFUL_INTERVAL_WIDTH
+  );
+  const visibleEvidenceIds = new Set(
+    visibleParentSegments
+      .map((segment) => segment.evidenceId)
+      .filter((id): id is string => id !== undefined)
+  );
+  const evidenceIds = new Set((swimlane.evidence ?? []).map((evidence) => evidence.id));
+  const suppressedEvidence: SuppressedInterval[] = (swimlane.evidence ?? [])
+    .filter((evidence) => !visibleEvidenceIds.has(evidence.id))
+    .map((evidence) => {
+      const causalIdentity =
+        evidence.label ?? evidence.toolUseId ?? evidence.requestId ?? evidence.processId;
+      const identitySuffix = causalIdentity ? ` (${causalIdentity})` : '';
+      return {
+        id: `evidence:${evidence.id}`,
+        identity: `${segmentLabel(evidence.type)}${identitySuffix}`,
+        details: { durationMs: evidence.durationMs, metrics: evidence.metrics },
+        target: evidence.target,
+      };
+    });
+  const suppressedLegacySegments: SuppressedInterval[] = swimlane.parentSegments
+    .filter(
+      (segment) =>
+        segment.type !== 'unattributed' &&
+        (!segment.evidenceId || !evidenceIds.has(segment.evidenceId)) &&
+        intervalPixelWidth(
+          segment.startTime,
+          segment.endTime,
+          axisStart,
+          axisDuration,
+          clockWidth
+        ) < MIN_MEANINGFUL_INTERVAL_WIDTH
+    )
+    .map((segment) => ({
+      id: `parent:${segment.id}`,
+      identity: segmentLabel(segment.type),
+      details: { durationMs: segment.durationMs, metrics: segment.metrics },
+      target: segment.target,
+    }));
+  const suppressedActivations: SuppressedInterval[] = swimlane.childRows.flatMap((row) =>
+    row.activations
+      .filter(
+        (activation) =>
+          intervalPixelWidth(
+            activation.startTime,
+            activation.endTime,
+            axisStart,
+            axisDuration,
+            clockWidth
+          ) < MIN_MEANINGFUL_INTERVAL_WIDTH
+      )
+      .map((activation) => ({
+        id: `activation:${row.id}:${activation.id}`,
+        identity: `${row.label} activation`,
+        details: { durationMs: activation.durationMs, metrics: activation.metrics },
+        target: activation.target,
+      }))
+  );
+  const suppressedIntervals = [
+    ...suppressedEvidence,
+    ...suppressedLegacySegments,
+    ...suppressedActivations,
+  ];
+  const suppressedCount = suppressedIntervals.length;
+  const displayedSuppressedIntervals = suppressedIntervals.slice(0, SUPPRESSED_DETAIL_LIMIT);
 
   return (
     <section
@@ -686,19 +785,22 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
           </div>
 
           <div data-testid="swimlane-parent-row" style={rowStyle}>
-            <div style={{ ...labelStyle, color: 'var(--color-text)', fontWeight: 600 }} title="Parent">
+            <div
+              style={{ ...labelStyle, color: 'var(--color-text)', fontWeight: 600 }}
+              title="Parent"
+            >
               Parent
             </div>
             <div ref={clockRef} data-clock-width={clockWidth} style={clockStyle}>
               <div aria-hidden="true" style={baseTrackStyle} />
-              {swimlane.parentSegments.map((segment) => {
+              {visibleParentSegments.map((segment) => {
                 const intervalKey = intervalIdentity('parent', segment.id);
                 const metrics =
-                  segment.type === 'work'
-                    ? (segment.metrics ?? workMetrics.get(workIdentity(segment)))
+                  segment.type === 'assistant-output'
+                    ? (segment.metrics ?? requestMetrics.get(requestIdentity(segment)))
                     : undefined;
                 const details = { durationMs: segment.durationMs, metrics };
-                const identity = `Parent ${segment.type}`;
+                const identity = `Parent ${segmentLabel(segment.type)}`;
                 return (
                   <SwimlaneInterval
                     key={intervalKey}
@@ -727,7 +829,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                       ...intervalBaseStyle,
                       ...intervalStyle(segment.startTime, segment.endTime, axisStart, axisDuration),
                       ...segmentTreatment(segment),
-                      zIndex: segment.type === 'work' ? 2 : 1,
+                      zIndex: segment.type === 'assistant-output' ? 2 : 1,
                     }}
                   />
                 );
@@ -827,58 +929,127 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                 </div>
                 <div style={clockStyle}>
                   <div aria-hidden="true" style={baseTrackStyle} />
-                  {row.activations.map((activation) => {
-                    const intervalKey = intervalIdentity('activation', row.id, activation.id);
-                    const details = {
-                      durationMs: activation.durationMs,
-                      metrics: activation.metrics,
-                    };
-                    const identity = `${row.label} activation`;
-                    return (
-                      <SwimlaneInterval
-                        key={intervalKey}
-                        active={activeKey === intervalKey}
-                        ariaLabel={identity}
-                        details={details}
-                        fallbackWidth={intervalPixelWidth(
+                  {row.activations
+                    .filter(
+                      (activation) =>
+                        intervalPixelWidth(
                           activation.startTime,
                           activation.endTime,
                           axisStart,
                           axisDuration,
                           clockWidth
-                        )}
-                        inlineLabel={formatDuration(activation.durationMs)}
-                        intervalKey={intervalKey}
-                        onBlur={interactionProps.onBlur}
-                        onFocus={interactionProps.onFocus}
-                        onMouseEnter={interactionProps.onMouseEnter}
-                        onMouseLeave={interactionProps.onMouseLeave}
-                        testId={`swimlane-activation-${activation.id}`}
-                        target={activation.target}
-                        onTarget={onTarget}
-                        tooltipId={tooltipId}
-                        style={{
-                          ...intervalBaseStyle,
-                          ...intervalStyle(
+                        ) >= MIN_MEANINGFUL_INTERVAL_WIDTH
+                    )
+                    .map((activation) => {
+                      const intervalKey = intervalIdentity('activation', row.id, activation.id);
+                      const details = {
+                        durationMs: activation.durationMs,
+                        metrics: activation.metrics,
+                      };
+                      const identity = `${row.label} activation`;
+                      return (
+                        <SwimlaneInterval
+                          key={intervalKey}
+                          active={activeKey === intervalKey}
+                          ariaLabel={identity}
+                          details={details}
+                          fallbackWidth={intervalPixelWidth(
                             activation.startTime,
                             activation.endTime,
                             axisStart,
-                            axisDuration
-                          ),
-                          backgroundColor: 'var(--card-header-hover)',
-                          borderColor: 'var(--card-separator)',
-                          borderStyle: 'solid',
-                          borderWidth: '1px',
-                          color: 'var(--card-text-lighter)',
-                          zIndex: 2,
-                        }}
-                      />
-                    );
-                  })}
+                            axisDuration,
+                            clockWidth
+                          )}
+                          inlineLabel={formatDuration(activation.durationMs)}
+                          intervalKey={intervalKey}
+                          onBlur={interactionProps.onBlur}
+                          onFocus={interactionProps.onFocus}
+                          onMouseEnter={interactionProps.onMouseEnter}
+                          onMouseLeave={interactionProps.onMouseLeave}
+                          testId={`swimlane-activation-${activation.id}`}
+                          target={activation.target}
+                          onTarget={onTarget}
+                          tooltipId={tooltipId}
+                          style={{
+                            ...intervalBaseStyle,
+                            ...intervalStyle(
+                              activation.startTime,
+                              activation.endTime,
+                              axisStart,
+                              axisDuration
+                            ),
+                            backgroundColor: 'var(--card-header-hover)',
+                            borderColor: 'var(--card-separator)',
+                            borderStyle: 'solid',
+                            borderWidth: '1px',
+                            color: 'var(--card-text-lighter)',
+                            zIndex: 2,
+                          }}
+                        />
+                      );
+                    })}
                 </div>
               </div>
             );
           })}
+          {suppressedCount > 0 && (
+            <details
+              data-suppressed-count={suppressedCount}
+              data-testid="swimlane-suppressed-activity"
+              style={{
+                color: 'var(--color-text-muted)',
+                fontSize: '10px',
+                marginLeft: `${LABEL_COLUMN_WIDTH}px`,
+                padding: '6px 8px 0',
+              }}
+            >
+              <summary aria-label={`${suppressedCount} hidden evidence intervals`}>
+                {suppressedCount} hidden evidence {suppressedCount === 1 ? 'interval' : 'intervals'}
+              </summary>
+              <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>
+                {displayedSuppressedIntervals.map((interval) => {
+                  const metrics = interval.details.metrics;
+                  const text = `${interval.identity} — ${formatDuration(interval.details.durationMs)}${
+                    metrics
+                      ? `; input ${exactNumber(metrics.inputTokens)}, cache read ${exactNumber(metrics.cacheReadTokens)}, cache write ${exactNumber(metrics.cacheCreationTokens)}, output ${exactNumber(metrics.outputTokens)}`
+                      : ''
+                  }`;
+                  return (
+                    <li key={interval.id}>
+                      {interval.target && onTarget ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (interval.target) onTarget(interval.target);
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 0,
+                            color: 'inherit',
+                            cursor: 'pointer',
+                            font: 'inherit',
+                            padding: 0,
+                            textAlign: 'left',
+                            textDecoration: 'underline',
+                          }}
+                        >
+                          {text}
+                        </button>
+                      ) : (
+                        text
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {suppressedCount > displayedSuppressedIntervals.length && (
+                <div>
+                  +{suppressedCount - displayedSuppressedIntervals.length} more retained in the
+                  model
+                </div>
+              )}
+            </details>
+          )}
         </div>
       </div>
       {activeInterval && (

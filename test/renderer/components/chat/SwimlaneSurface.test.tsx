@@ -77,10 +77,11 @@ function mixedModel(): SwimlaneModel {
     startTime: at(0, true),
     endTime: at(10, true),
     durationMs: 10_000,
+    evidence: [],
     parentSegments: [
       {
         id: 'work',
-        type: 'work',
+        type: 'assistant-output',
         startTime: at(0, true),
         endTime: at(2, true),
         durationMs: 2000,
@@ -95,24 +96,38 @@ function mixedModel(): SwimlaneModel {
       },
       {
         id: 'hitl-wait',
-        type: 'HITL-wait',
+        type: 'human-wait',
         startTime: at(4),
         endTime: at(6),
         durationMs: 2000,
       },
       {
-        id: 'idle',
-        type: 'idle',
+        id: 'model-response',
+        type: 'model-response',
         startTime: at(6),
+        endTime: at(7),
+        durationMs: 1000,
+      },
+      {
+        id: 'tool-execution',
+        type: 'tool-execution',
+        startTime: at(7),
+        endTime: at(8),
+        durationMs: 1000,
+      },
+      {
+        id: 'idle',
+        type: 'unattributed',
+        startTime: at(8),
         endTime: at(10),
-        durationMs: 4000,
+        durationMs: 2000,
       },
     ],
     hitlMarks: [
       { id: 'ask-start', type: 'ask', timestamp: at(4), source: 'explicit-ask' },
       { id: 'ask-answer', type: 'answer', timestamp: at(6), source: 'explicit-ask' },
-      { id: 'resume-start', type: 'resume-start', timestamp: at(7), source: 'inferred-resume' },
-      { id: 'resume-end', type: 'resume', timestamp: at(9), source: 'inferred-resume' },
+      { id: 'resume-start', type: 'resume-start', timestamp: at(7), source: 'linked-resume' },
+      { id: 'resume-end', type: 'resume', timestamp: at(9), source: 'linked-resume' },
     ],
     childRows: [
       {
@@ -160,7 +175,7 @@ function mixedModel(): SwimlaneModel {
 }
 
 function percentageWidth(styleWidth: string): number {
-  return styleWidth.endsWith('%') ? (Number.parseFloat(styleWidth) / 100) * clockWidth : 2;
+  return styleWidth.endsWith('%') ? (Number.parseFloat(styleWidth) / 100) * clockWidth : 0;
 }
 
 async function render(
@@ -264,6 +279,8 @@ describe('SwimlaneSurface', () => {
     const work = element(host, 'swimlane-parent-segment-work');
     const childWait = element(host, 'swimlane-parent-segment-child-wait');
     const hitlWait = element(host, 'swimlane-parent-segment-hitl-wait');
+    const modelResponse = element(host, 'swimlane-parent-segment-model-response');
+    const toolExecution = element(host, 'swimlane-parent-segment-tool-execution');
     const idle = element(host, 'swimlane-parent-segment-idle');
     expect(work.style.left).toBe('0%');
     expect(work.style.width).toBe('20%');
@@ -272,6 +289,10 @@ describe('SwimlaneSurface', () => {
     expect(childWait.style.backgroundImage).toContain('repeating-linear-gradient');
     expect(childWait.style.backgroundColor).toBe('transparent');
     expect(hitlWait.style.backgroundColor).toBe('var(--warning-bg)');
+    expect(modelResponse.style.backgroundColor).toBe('var(--card-header-hover)');
+    expect(modelResponse.getAttribute('aria-label')).toBe('Parent model response');
+    expect(toolExecution.style.backgroundColor).toBe('var(--color-surface-raised)');
+    expect(toolExecution.getAttribute('aria-label')).toBe('Parent tool execution');
     expect(idle.style.backgroundColor).toBe('transparent');
     expect(element(host, 'swimlane-parent-segment-work-duration').textContent).toBe('2.0s');
     expect(host.textContent).not.toContain('1.2k in');
@@ -318,7 +339,7 @@ describe('SwimlaneSurface', () => {
     model.parentSegments = [
       {
         id: 'short-work',
-        type: 'work',
+        type: 'assistant-output',
         startTime: at(0),
         endTime: at(0.3),
         durationMs: 300,
@@ -371,7 +392,7 @@ describe('SwimlaneSurface', () => {
     expect(child.tagName).toBe('BUTTON');
     expect(silent.tagName).toBe('DIV');
     expect(untargetedChild.tagName).toBe('DIV');
-    expect(work.getAttribute('aria-label')).toBe('Parent work');
+    expect(work.getAttribute('aria-label')).toBe('Parent assistant output');
 
     await mouseOver(work);
     const tooltip = element(document, 'swimlane-tooltip');
@@ -380,15 +401,13 @@ describe('SwimlaneSurface', () => {
     expect(tooltip.textContent).toContain('Cache read500');
     expect(tooltip.textContent).toContain('Cache write200');
     expect(tooltip.textContent).toContain('Output100');
-    expect(work.getAttribute('aria-label')).toBe('Parent work');
+    expect(work.getAttribute('aria-label')).toBe('Parent assistant output');
     expect(work.getAttribute('aria-describedby')).toBe(tooltip.id);
     await mouseOut(work);
 
     await focus(work);
-    expect(work.getAttribute('aria-label')).toBe('Parent work');
-    expect(work.getAttribute('aria-describedby')).toBe(
-      element(document, 'swimlane-tooltip').id
-    );
+    expect(work.getAttribute('aria-label')).toBe('Parent assistant output');
+    expect(work.getAttribute('aria-describedby')).toBe(element(document, 'swimlane-tooltip').id);
     expect(element(document, 'swimlane-tooltip').textContent).toContain('Input1,200');
     await blur(work);
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
@@ -435,10 +454,10 @@ describe('SwimlaneSurface', () => {
     model.parentSegments = [
       {
         id: 'inserted-idle',
-        type: 'idle',
+        type: 'unattributed',
         startTime: at(0),
-        endTime: at(0),
-        durationMs: 0,
+        endTime: at(0.1),
+        durationMs: 100,
       },
       ...model.parentSegments,
     ];
@@ -449,7 +468,9 @@ describe('SwimlaneSurface', () => {
       element(document, 'swimlane-tooltip').id
     );
     expect(element(document, 'swimlane-tooltip').textContent).toContain('Input1,200');
-    expect(element(host, 'swimlane-parent-segment-inserted-idle').getAttribute('aria-describedby')).toBeNull();
+    expect(
+      element(host, 'swimlane-parent-segment-inserted-idle').getAttribute('aria-describedby')
+    ).toBeNull();
   });
 
   it('gives narrow silent intervals keyboard duration details without navigation semantics', async () => {
@@ -458,7 +479,7 @@ describe('SwimlaneSurface', () => {
 
     expect(silent.tagName).toBe('DIV');
     expect(silent.tabIndex).toBe(0);
-    expect(silent.getAttribute('aria-label')).toBe('Parent child-wait');
+    expect(silent.getAttribute('aria-label')).toBe('Parent child wait');
     await focus(silent);
 
     const tooltip = element(document, 'swimlane-tooltip');
@@ -534,7 +555,7 @@ describe('SwimlaneSurface', () => {
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
   });
 
-  it('keeps zero-duration intervals and coincident HITL marks separately perceivable', async () => {
+  it('keeps sub-pixel activity as aggregate metadata without painting false-width bars', async () => {
     const instantMetrics = metrics({
       inputTokens: 1,
       cacheReadTokens: 2,
@@ -544,21 +565,25 @@ describe('SwimlaneSurface', () => {
     });
     const model: SwimlaneModel = {
       startTime: at(0),
-      endTime: at(0),
-      durationMs: 0,
-      parentSegments: [
+      endTime: at(10),
+      durationMs: 10_000,
+      evidence: [
         {
-          id: 'instant-work',
-          type: 'work',
+          id: 'instant-tool',
+          type: 'tool-execution',
           startTime: at(0),
-          endTime: at(0),
-          durationMs: 0,
+          endTime: at(0.005),
+          durationMs: 5,
+          toolUseId: 'tool-5ms',
+          label: 'Read',
           metrics: instantMetrics,
+          target: { kind: 'turn', groupId: 'tool-owner' },
         },
       ],
+      parentSegments: [],
       hitlMarks: [
         { id: 'same-ask', type: 'ask', timestamp: at(0), source: 'explicit-ask' },
-        { id: 'same-resume', type: 'resume', timestamp: at(0), source: 'inferred-resume' },
+        { id: 'same-resume', type: 'resume', timestamp: at(0), source: 'linked-resume' },
       ],
       childRows: [
         {
@@ -571,26 +596,31 @@ describe('SwimlaneSurface', () => {
               id: 'instant-activation',
               processId: 'instant-process',
               startTime: at(0),
-              endTime: at(0),
-              durationMs: 0,
+              endTime: at(0.005),
+              durationMs: 5,
               metrics: instantMetrics,
             },
           ],
         },
       ],
     };
-    const host = await render(model);
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
 
-    const work = element(host, 'swimlane-parent-segment-instant-work');
-    const activation = element(host, 'swimlane-activation-instant-activation');
-    expect(work.style.width).toBe('2px');
-    expect(activation.style.width).toBe('2px');
-    expect(work.style.overflow).toBe('hidden');
-    expect(element(host, 'swimlane-parent-segment-instant-work-duration').style.visibility).toBe(
-      'hidden'
+    expect(host.querySelector('[data-testid="swimlane-parent-segment-instant-tool"]')).toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-activation-instant-activation"]')).toBeNull();
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+    expect(suppressed.dataset.suppressedCount).toBe('2');
+    expect(suppressed.querySelector('summary')?.getAttribute('aria-label')).toBe(
+      '2 hidden evidence intervals'
     );
-    await focus(work);
-    expect(element(document, 'swimlane-tooltip').textContent).toContain('Cache write3');
+    expect(suppressed.textContent).toContain('tool execution (Read) — 5ms');
+    expect(suppressed.textContent).toContain('Instant child activation — 5ms');
+    await act(async () => {
+      suppressed.querySelector('summary')?.click();
+      suppressed.querySelector('button')?.click();
+    });
+    expect(onTarget).toHaveBeenCalledWith({ kind: 'turn', groupId: 'tool-owner' });
 
     const ask = element(host, 'swimlane-mark-same-ask');
     const resume = element(host, 'swimlane-mark-same-resume');
@@ -611,7 +641,7 @@ describe('SwimlaneSurface', () => {
         id: 'close-second',
         type: 'resume',
         timestamp: at(5.01),
-        source: 'inferred-resume',
+        source: 'linked-resume',
       },
     ];
     const host = await render(model);
@@ -646,12 +676,13 @@ describe('SwimlaneSurface', () => {
     expect(label.textContent).toContain(FAMILY);
   });
 
-  it('shows inherited metrics on split work parts through the same details layer', async () => {
+  it('shows inherited metrics on split assistant-output parts through the same details layer', async () => {
     const model = mixedModel();
     model.parentSegments = [
       {
         id: 'logical-work',
-        type: 'work',
+        type: 'assistant-output',
+        requestId: 'logical',
         startTime: at(0),
         endTime: at(2),
         durationMs: 2000,
@@ -665,7 +696,8 @@ describe('SwimlaneSurface', () => {
       },
       {
         id: 'logical-work-part-2',
-        type: 'work',
+        type: 'assistant-output',
+        requestId: 'logical',
         startTime: at(2),
         endTime: at(3),
         durationMs: 1000,
@@ -674,7 +706,7 @@ describe('SwimlaneSurface', () => {
     const host = await render(model);
     const split = element(host, 'swimlane-parent-segment-logical-work-part-2');
 
-    expect(split.getAttribute('aria-label')).toBe('Parent work');
+    expect(split.getAttribute('aria-label')).toBe('Parent assistant output');
     await focus(split);
     expect(element(document, 'swimlane-tooltip').textContent).toContain('Cache write30');
   });
