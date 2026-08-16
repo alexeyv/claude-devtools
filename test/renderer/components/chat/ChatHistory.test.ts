@@ -7,10 +7,11 @@ import { TabUIProvider } from '../../../../src/renderer/contexts/TabUIContext';
 import { useStore } from '../../../../src/renderer/store';
 import { createMockElectronAPI } from '../../../mocks/electronAPI';
 
-import type { SessionDetail, SwimlaneModel } from '../../../../src/main/types';
+import type { Process, SessionDetail, SwimlaneModel } from '../../../../src/main/types';
 import type { ContextStats } from '../../../../src/renderer/types/contextInjection';
 import type { ChatItem, SessionConversation } from '../../../../src/renderer/types/groups';
 import type { Tab } from '../../../../src/renderer/types/tabs';
+import { getSubagentDisplayItemId } from '../../../../src/renderer/types/tabs';
 
 class FakeIntersectionObserver implements IntersectionObserver {
   readonly root = null;
@@ -106,6 +107,64 @@ function makeAIItem(id: string): ChatItem {
   };
 }
 
+function makeAIItemWithChild(
+  id: string,
+  childId: string,
+  spawnId?: string
+): { item: ChatItem; process: Process } {
+  const startTime = new Date('2026-08-16T12:00:01Z');
+  const endTime = new Date('2026-08-16T12:00:02Z');
+  const child: Process = {
+    id: childId,
+    parentTaskId: spawnId,
+    filePath: `/tmp/${childId}.jsonl`,
+    startTime,
+    endTime,
+    durationMs: 1000,
+    metrics: {
+      durationMs: 1000,
+      totalTokens: 2,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      messageCount: 1,
+    },
+    isParallel: true,
+    messages: [
+      {
+        uuid: `${childId}-message`,
+        parentUuid: null,
+        type: 'assistant',
+        timestamp: startTime,
+        content: [{ type: 'text', text: 'Child output' }],
+        isSidechain: true,
+        isMeta: false,
+        toolCalls: [],
+        toolResults: [],
+      },
+    ],
+  };
+  const item = makeAIItem(id);
+  if (item.type !== 'ai') throw new Error('Expected AI item');
+  item.group.processes = [child];
+  item.group.steps = [
+    {
+      id: childId,
+      type: 'subagent',
+      startTime,
+      endTime,
+      durationMs: 1000,
+      content: { subagentId: childId, subagentDescription: 'Child card' },
+      context: 'subagent',
+      agentId: childId,
+      isParallel: true,
+    },
+  ];
+  item.group.summary.subagentCount = 1;
+  return { item, process: child };
+}
+
 function makeConversation(items: ChatItem[]): SessionConversation {
   return {
     sessionId: 'session-1',
@@ -156,6 +215,44 @@ function makeSwimlaneModel(id = 'default'): SwimlaneModel {
     hitlMarks: [],
     childRows: [],
   };
+}
+
+function makeChildTargetSwimlane(groupId: string, child: Process): SwimlaneModel {
+  const model = makeSwimlaneModel('child-target');
+  model.parentSegments[0].target = { kind: 'turn', groupId };
+  model.hitlMarks = [
+    {
+      id: 'resume-boundary',
+      type: 'resume',
+      timestamp: model.endTime,
+      source: 'inferred-resume',
+    },
+  ];
+  model.childRows = [
+    {
+      id: child.id,
+      label: 'Parallel child',
+      parentRowId: null,
+      depth: 0,
+      activations: [
+        {
+          id: child.id,
+          processId: child.id,
+          startTime: model.startTime,
+          endTime: model.endTime,
+          durationMs: 1000,
+          metrics: child.metrics,
+          target: {
+            kind: 'subagent',
+            groupId,
+            processId: child.id,
+            spawnId: child.parentTaskId ?? '',
+          },
+        },
+      ],
+    },
+  ];
+  return model;
 }
 
 function makeSessionDetail(swimlane: SwimlaneModel): SessionDetail {
@@ -623,6 +720,376 @@ describe('ChatHistory swimlane', () => {
         element.className.includes('ring-yellow-500/30')
       )
     ).toBe(true);
+  });
+
+  it('navigates independent parallel child cards across a checkpoint/resume shape', async () => {
+    const { item, process: firstChild } = makeAIItemWithChild(
+      'ai-child-owner',
+      'parallel-child-one',
+      'spawn-parallel-child-one'
+    );
+    const { item: secondItem, process: secondChild } = makeAIItemWithChild(
+      'unused-owner',
+      'parallel-child-two',
+      'spawn-parallel-child-two'
+    );
+    if (item.type !== 'ai' || secondItem.type !== 'ai') throw new Error('Expected AI items');
+    item.group.processes.push(secondChild);
+    item.group.steps.push(...secondItem.group.steps);
+    item.group.summary.subagentCount = 2;
+
+    const swimlane = makeChildTargetSwimlane('ai-child-owner', firstChild);
+    const secondRow = makeChildTargetSwimlane('ai-child-owner', secondChild).childRows[0];
+    swimlane.childRows.push(secondRow);
+    const checkpointTime = new Date(swimlane.startTime.getTime() + 300);
+    const resumeTime = new Date(swimlane.startTime.getTime() + 700);
+    const parentWork = swimlane.parentSegments[0];
+    swimlane.parentSegments = [
+      {
+        ...parentWork,
+        id: 'work-before-checkpoint',
+        endTime: checkpointTime,
+        durationMs: 300,
+      },
+      {
+        id: 'checkpoint-gap',
+        type: 'HITL-wait',
+        startTime: checkpointTime,
+        endTime: resumeTime,
+        durationMs: 400,
+      },
+      {
+        ...parentWork,
+        id: 'work-after-resume',
+        startTime: resumeTime,
+        durationMs: 300,
+      },
+    ];
+    swimlane.hitlMarks = [
+      {
+        id: 'checkpoint-start',
+        type: 'resume-start',
+        timestamp: checkpointTime,
+        source: 'inferred-resume',
+      },
+      {
+        id: 'checkpoint-resume',
+        type: 'resume',
+        timestamp: resumeTime,
+        source: 'inferred-resume',
+      },
+    ];
+    setTabs(
+      { 'tab-1': makeConversation([makeUserItem('user-1'), item]) },
+      {},
+      { 'tab-1': swimlane }
+    );
+    const host = await renderTab('tab-1');
+
+    await click(button(host, 'Swimlane'));
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-checkpoint-gap"]')
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-mark-checkpoint-start"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-mark-checkpoint-resume"]')).not.toBeNull();
+    const firstActivation = host.querySelector<HTMLElement>(
+      '[data-testid="swimlane-activation-parallel-child-one"]'
+    );
+    if (!firstActivation) throw new Error('Missing first targeted child activation');
+    expect(firstActivation.tagName).toBe('BUTTON');
+    await click(firstActivation);
+
+    expect(host.querySelector('[data-testid="swimlane-surface"]')).toBeNull();
+    await flushAnimationFrames(8);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await flushAnimationFrames(8);
+
+    const firstCardId = getSubagentDisplayItemId(firstChild.id, firstChild.parentTaskId!);
+    const firstCard = host.querySelector<HTMLElement>(`[data-subagent-card-id="${firstCardId}"]`);
+    expect(firstCard).not.toBeNull();
+    expect(firstCard?.className).toContain('ring-blue-500/30');
+    expect(useStore.getState().isAIGroupExpandedForTab('tab-1', 'ai-child-owner')).toBe(true);
+    expect(
+      useStore
+        .getState()
+        .getExpandedDisplayItemIdsForTab('tab-1', 'ai-child-owner')
+        .has(firstCardId)
+    ).toBe(true);
+    expect(useStore.getState().isSubagentTraceExpandedForTab('tab-1', firstChild.id)).toBe(true);
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(
+      useStore.getState().openTabs.find((tab) => tab.id === 'tab-1')?.pendingNavigation
+    ).toBeUndefined();
+
+    scrollToSpy.mockClear();
+    await click(button(host, 'Swimlane'));
+    const secondActivation = host.querySelector<HTMLElement>(
+      '[data-testid="swimlane-activation-parallel-child-two"]'
+    );
+    if (!secondActivation) throw new Error('Missing second targeted child activation');
+    await click(secondActivation);
+    await flushAnimationFrames(8);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await flushAnimationFrames(8);
+
+    const secondCardId = getSubagentDisplayItemId(secondChild.id, secondChild.parentTaskId!);
+    const secondCard = host.querySelector<HTMLElement>(`[data-subagent-card-id="${secondCardId}"]`);
+    expect(secondCard).not.toBeNull();
+    expect(secondCard?.className).toContain('ring-blue-500/30');
+    expect(
+      useStore
+        .getState()
+        .getExpandedDisplayItemIdsForTab('tab-1', 'ai-child-owner')
+        .has(secondCardId)
+    ).toBe(true);
+    expect(useStore.getState().isSubagentTraceExpandedForTab('tab-1', secondChild.id)).toBe(true);
+    expect(scrollToSpy).toHaveBeenCalled();
+  });
+
+  it('mounts and scrolls to an exact off-screen child card through the real virtualizer', async () => {
+    const rowHeight = 260;
+    const viewportHeight = 500;
+    const targetIndex = 20;
+    const { item: targetItem, process: child } = makeAIItemWithChild(
+      'ai-virtualized-owner',
+      'virtualized-child',
+      'spawn-virtualized-child'
+    );
+    const items = [
+      ...Array.from({ length: targetIndex }, (_, index) => makeUserItem(`before-${index}`)),
+      targetItem,
+      ...Array.from({ length: 80 }, (_, index) => makeUserItem(`after-${index}`)),
+    ];
+    const totalHeight = items.length * rowHeight;
+    const swimlane = makeChildTargetSwimlane('ai-virtualized-owner', child);
+
+    class MeasuredResizeObserver implements ResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      disconnect(): void {
+        // No-op test observer.
+      }
+      observe(element: Element): void {
+        if (!(element instanceof HTMLElement) || element.dataset.testid !== 'turn-list-surface') {
+          return;
+        }
+        queueMicrotask(() => {
+          this.callback(
+            [
+              {
+                target: element,
+                borderBoxSize: [
+                  { inlineSize: 1000, blockSize: viewportHeight } as ResizeObserverSize,
+                ],
+                contentBoxSize: [],
+                contentRect: new DOMRect(0, 0, 1000, viewportHeight),
+                devicePixelContentBoxSize: [],
+              },
+            ],
+            this
+          );
+        });
+      }
+      unobserve(): void {
+        // No-op test observer.
+      }
+    }
+
+    vi.stubGlobal('ResizeObserver', MeasuredResizeObserver);
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function () {
+      return this.dataset.testid === 'turn-list-surface' ? 1000 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function () {
+      return this.dataset.testid === 'turn-list-surface' ? viewportHeight : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function () {
+      return this.dataset.testid === 'turn-list-surface' ? viewportHeight : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function () {
+      return this.dataset.testid === 'turn-list-surface' ? totalHeight : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      if (this.dataset.testid === 'turn-list-surface') {
+        return new DOMRect(0, 0, 1000, viewportHeight);
+      }
+      const container = this.closest<HTMLElement>('[data-testid="turn-list-surface"]');
+      const row = this.hasAttribute('data-index')
+        ? this
+        : this.closest<HTMLElement>('[data-index]');
+      const index = Number(row?.dataset.index ?? 0);
+      const rowTop = index * rowHeight - (container?.scrollTop ?? 0);
+      const height = this.hasAttribute('data-index')
+        ? rowHeight
+        : this.hasAttribute('data-subagent-card-id')
+          ? 120
+          : 40;
+      return new DOMRect(0, rowTop, 1000, height);
+    });
+
+    const scrollPositions: number[] = [];
+    scrollToSpy.mockImplementation(function (this: HTMLElement, options?: ScrollToOptions) {
+      const top = options?.top;
+      if (typeof top !== 'number') return;
+      this.scrollTop = top;
+      scrollPositions.push(top);
+      this.dispatchEvent(new Event('scroll'));
+    });
+
+    setTabs({ 'tab-1': makeConversation(items) }, {}, { 'tab-1': swimlane });
+    const host = await renderTab('tab-1');
+    const turnList = host.querySelector<HTMLElement>('[data-testid="turn-list-surface"]');
+    if (!turnList) throw new Error('Missing virtualized turn list');
+
+    turnList.scrollTop = totalHeight - viewportHeight;
+    turnList.dispatchEvent(new Event('scroll'));
+    await flushAnimationFrames(8);
+
+    const cardId = getSubagentDisplayItemId(child.id, child.parentTaskId!);
+    expect(host.querySelector(`[data-subagent-card-id="${cardId}"]`)).toBeNull();
+    expect(
+      Array.from(host.querySelectorAll<HTMLElement>('[data-index]')).some(
+        (row) => row.dataset.index === String(targetIndex)
+      )
+    ).toBe(false);
+
+    scrollPositions.length = 0;
+    await click(button(host, 'Swimlane'));
+    const activation = host.querySelector<HTMLElement>(
+      '[data-testid="swimlane-activation-virtualized-child"]'
+    );
+    if (!activation) throw new Error('Missing virtualized child activation');
+    await click(activation);
+    await flushAnimationFrames(10);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await flushAnimationFrames(10);
+
+    expect(host.querySelector(`[data-subagent-card-id="${cardId}"]`)).not.toBeNull();
+    expect(
+      Array.from(host.querySelectorAll<HTMLElement>('[data-index]')).some(
+        (row) => row.dataset.index === String(targetIndex)
+      )
+    ).toBe(true);
+    const expectedCenteredCardTop = targetIndex * rowHeight - (viewportHeight - 60) / 2;
+    expect(scrollPositions.at(-1)).toBe(expectedCenteredCardTop);
+    expect(turnList.scrollTop).toBe(expectedCenteredCardTop);
+    expect(useStore.getState().isAIGroupExpandedForTab('tab-1', 'ai-virtualized-owner')).toBe(true);
+    expect(
+      useStore
+        .getState()
+        .getExpandedDisplayItemIdsForTab('tab-1', 'ai-virtualized-owner')
+        .has(cardId)
+    ).toBe(true);
+    expect(useStore.getState().isSubagentTraceExpandedForTab('tab-1', child.id)).toBe(true);
+    expect(
+      useStore.getState().openTabs.find((tab) => tab.id === 'tab-1')?.pendingNavigation
+    ).toBeUndefined();
+  });
+
+  it('navigates and highlights a shutdown-only timing-linked team child card', async () => {
+    const { item, process: child } = makeAIItemWithChild(
+      'ai-shutdown-owner',
+      'shutdown-team-child'
+    );
+    child.team = {
+      teamName: 'verification-team',
+      memberName: 'shutdown-worker',
+      memberColor: 'blue',
+    };
+    child.messages = [
+      {
+        uuid: 'shutdown-response-message',
+        parentUuid: null,
+        type: 'assistant',
+        timestamp: child.startTime,
+        content: [
+          {
+            type: 'tool_use',
+            id: 'shutdown-response-call',
+            name: 'SendMessage',
+            input: { type: 'shutdown_response' },
+          },
+        ],
+        isSidechain: true,
+        isMeta: false,
+        toolCalls: [
+          {
+            id: 'shutdown-response-call',
+            name: 'SendMessage',
+            input: { type: 'shutdown_response' },
+            isTask: false,
+          },
+        ],
+        toolResults: [],
+      },
+    ];
+    const swimlane = makeChildTargetSwimlane('ai-shutdown-owner', child);
+    setTabs(
+      { 'tab-1': makeConversation([makeUserItem('user-1'), item]) },
+      {},
+      { 'tab-1': swimlane }
+    );
+    const host = await renderTab('tab-1');
+
+    await click(button(host, 'Swimlane'));
+    const activation = host.querySelector<HTMLElement>(
+      '[data-testid="swimlane-activation-shutdown-team-child"]'
+    );
+    if (!activation) throw new Error('Missing shutdown child activation');
+    await click(activation);
+    await flushAnimationFrames(8);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await flushAnimationFrames(8);
+
+    const cardId = getSubagentDisplayItemId(child.id);
+    const card = host.querySelector<HTMLElement>(`[data-subagent-card-id="${cardId}"]`);
+    expect(card?.textContent).toContain('Shutdown confirmed');
+    expect(card?.className).toContain('ring-blue-500/30');
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(
+      useStore.getState().getExpandedDisplayItemIdsForTab('tab-1', 'ai-shutdown-owner').has(cardId)
+    ).toBe(true);
+    expect(
+      useStore.getState().openTabs.find((tab) => tab.id === 'tab-1')?.pendingNavigation
+    ).toBeUndefined();
+  });
+
+  it('opens a targeted parent in a no-child session without changing its expansion state', async () => {
+    const aiItem = makeAIItem('ai-parent-target');
+    const swimlane = makeSwimlaneModel('parent-only');
+    swimlane.parentSegments[0].target = { kind: 'turn', groupId: 'ai-parent-target' };
+    setTabs(
+      { 'tab-1': makeConversation([makeUserItem('user-1'), aiItem]) },
+      {},
+      { 'tab-1': swimlane }
+    );
+    const host = await renderTab('tab-1');
+    expect(useStore.getState().isAIGroupExpandedForTab('tab-1', 'ai-parent-target')).toBe(false);
+
+    await click(button(host, 'Swimlane'));
+    const work = host.querySelector<HTMLElement>(
+      '[data-testid="swimlane-parent-segment-parent-only-work"]'
+    );
+    if (!work) throw new Error('Missing targeted parent work');
+    await click(work);
+    await flushAnimationFrames(8);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    await flushAnimationFrames(8);
+
+    expect(host.querySelector('[data-testid="swimlane-surface"]')).toBeNull();
+    expect(useStore.getState().isAIGroupExpandedForTab('tab-1', 'ai-parent-target')).toBe(false);
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(
+      host.querySelector<HTMLElement>('[data-chat-group-id="ai-parent-target"]')?.className
+    ).toContain('ring-blue-500/30');
   });
 
   it('keeps an already-handled search open and reveals for a genuinely new selection', async () => {

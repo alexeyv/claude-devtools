@@ -76,6 +76,20 @@ export interface Process {
 /** Classification for every interval on the parent lane. */
 export type SwimlaneSegmentType = 'work' | 'HITL-wait' | 'child-wait' | 'idle';
 
+/** Exact existing microscope destination projected by the main process. */
+export type SwimlaneNavigationTarget =
+  | {
+      kind: 'turn';
+      groupId: string;
+    }
+  | {
+      kind: 'subagent';
+      groupId: string;
+      processId: string;
+      /** Spawn tool identity when available; timing-linked cards use the empty identity. */
+      spawnId?: string;
+    };
+
 /** A serializable interval on the parent lane. */
 export interface SwimlaneParentSegment {
   id: string;
@@ -89,6 +103,8 @@ export interface SwimlaneParentSegment {
   requestId?: string;
   /** Existing chunk microscope target for later renderer navigation. */
   chunkId?: string;
+  /** Existing turn microscope destination, absent for non-work/silent intervals. */
+  target?: SwimlaneNavigationTarget;
 }
 
 /** A labeled boundary for explicit AskUserQuestion or inferred resume waits. */
@@ -108,6 +124,8 @@ export interface SwimlaneChildActivation {
   endTime: Date;
   durationMs: number;
   metrics: SessionMetrics;
+  /** Existing root-session SubagentItem destination, when one is known exactly. */
+  target?: SwimlaneNavigationTarget;
 }
 
 /** A logical child, flattened for safe IPC serialization. */

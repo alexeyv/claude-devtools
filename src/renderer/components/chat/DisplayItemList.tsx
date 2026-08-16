@@ -8,6 +8,7 @@ import {
   TOOL_CALL_BORDER,
   TOOL_CALL_TEXT,
 } from '@renderer/constants/cssVariables';
+import { getSubagentDisplayItemId } from '@renderer/types/tabs';
 import { formatTokensCompact } from '@renderer/utils/formatters';
 import { format } from 'date-fns';
 import { ChevronRight, Layers, MailOpen } from 'lucide-react';
@@ -37,6 +38,8 @@ interface DisplayItemListProps {
   notificationColorMap?: Map<string, TriggerColor>;
   /** Optional callback to register tool element refs for scroll targeting */
   registerToolRef?: (toolId: string, el: HTMLDivElement | null) => void;
+  /** Optional callback to register exact outer subagent cards for lane navigation. */
+  registerSubagentRef?: (cardId: string, el: HTMLDivElement | null) => void;
 }
 
 /**
@@ -70,6 +73,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
   highlightColor,
   notificationColorMap,
   registerToolRef,
+  registerSubagentRef,
 }: Readonly<DisplayItemListProps>): React.JSX.Element {
   // Reply-link highlight: when hovering a reply badge, dim everything except the linked pair
   const [replyLinkToolId, setReplyLinkToolId] = useState<string | null>(null);
@@ -167,7 +171,7 @@ export const DisplayItemList = React.memo(function DisplayItemList({
           }
 
           case 'subagent': {
-            itemKey = `subagent-${item.subagent.id}-${index}`;
+            itemKey = getSubagentDisplayItemId(item.subagent.id, item.subagent.parentTaskId ?? '');
             const subagentStep = {
               id: itemKey,
               type: 'subagent' as const,
@@ -192,6 +196,8 @@ export const DisplayItemList = React.memo(function DisplayItemList({
                 highlightColor={highlightColor}
                 notificationColorMap={notificationColorMap}
                 registerToolRef={registerToolRef}
+                cardRefId={itemKey}
+                registerSubagentRef={registerSubagentRef}
               />
             );
             break;

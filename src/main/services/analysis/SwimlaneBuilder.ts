@@ -8,6 +8,7 @@ import {
   type SwimlaneChildRow,
   type SwimlaneHitlMark,
   type SwimlaneModel,
+  type SwimlaneNavigationTarget,
   type SwimlaneParentSegment,
   type SwimlaneSegmentType,
 } from '@main/types';
@@ -72,8 +73,7 @@ function sortedMessages(messages: ParsedMessage[]): ParsedMessage[] {
     .sort(
       (left, right) =>
         (validTime(left.message.timestamp) ?? EPOCH) -
-          (validTime(right.message.timestamp) ?? EPOCH) ||
-        left.index - right.index
+          (validTime(right.message.timestamp) ?? EPOCH) || left.index - right.index
     )
     .map(({ message }) => message);
 }
@@ -106,7 +106,11 @@ function buildWorkRanges(chunks: Chunk[], messages: ParsedMessage[]): WorkRange[
 
   const groups = new Map<string, ParsedMessage[]>();
   messages.forEach((message, index) => {
-    if (message.type !== 'assistant' || message.isSidechain || validTime(message.timestamp) === undefined) {
+    if (
+      message.type !== 'assistant' ||
+      message.isSidechain ||
+      validTime(message.timestamp) === undefined
+    ) {
       return;
     }
     const key = message.requestId ? `request:${message.requestId}` : `message:${index}`;
@@ -131,6 +135,33 @@ function buildWorkRanges(chunks: Chunk[], messages: ParsedMessage[]): WorkRange[
     .sort((left, right) => left.start - right.start || left.end - right.end);
 }
 
+function buildChildTargets(chunks: Chunk[]): Map<string, SwimlaneNavigationTarget> {
+  const candidatesByProcess = new Map<string, Map<string, SwimlaneNavigationTarget>>();
+
+  for (const chunk of chunks) {
+    if (!isAIChunk(chunk)) continue;
+    for (const process of chunk.processes) {
+      const spawnId = process.parentTaskId ?? '';
+      const target: SwimlaneNavigationTarget = {
+        kind: 'subagent',
+        groupId: chunk.id,
+        processId: process.id,
+        spawnId,
+      };
+      const candidates =
+        candidatesByProcess.get(process.id) ?? new Map<string, SwimlaneNavigationTarget>();
+      candidates.set(`${target.groupId}\0${target.processId}\0${spawnId}`, target);
+      candidatesByProcess.set(process.id, candidates);
+    }
+  }
+
+  const targets = new Map<string, SwimlaneNavigationTarget>();
+  for (const [processId, candidates] of candidatesByProcess) {
+    if (candidates.size === 1) targets.set(processId, [...candidates.values()][0]);
+  }
+  return targets;
+}
+
 function toolUseIds(message: ParsedMessage): string[] {
   const ids = new Set<string>();
   if (message.sourceToolUseID) ids.add(message.sourceToolUseID);
@@ -140,11 +171,7 @@ function toolUseIds(message: ParsedMessage): string[] {
   return [...ids];
 }
 
-function uncoveredRanges(
-  start: number,
-  end: number,
-  explicitRanges: HitlRange[]
-): TimedRange[] {
+function uncoveredRanges(start: number, end: number, explicitRanges: HitlRange[]): TimedRange[] {
   const covering = explicitRanges
     .filter((range) => range.end > start && range.start < end)
     .map((range) => ({ start: Math.max(start, range.start), end: Math.min(end, range.end) }))
@@ -173,11 +200,17 @@ function buildHitlRanges(
     const message = parentMessages[messageIndex];
     const start = validTime(message.timestamp);
     if (start === undefined) continue;
-    for (const call of message.toolCalls.filter((toolCall) => toolCall.name === 'AskUserQuestion')) {
+    for (const call of message.toolCalls.filter(
+      (toolCall) => toolCall.name === 'AskUserQuestion'
+    )) {
       if (seenAskIds.has(call.id)) continue;
       seenAskIds.add(call.id);
       let answer: ParsedMessage | undefined;
-      for (let candidateIndex = messageIndex; candidateIndex < parentMessages.length; candidateIndex++) {
+      for (
+        let candidateIndex = messageIndex;
+        candidateIndex < parentMessages.length;
+        candidateIndex++
+      ) {
         const candidate = parentMessages[candidateIndex];
         if (toolUseIds(candidate).includes(call.id)) {
           answer = candidate;
@@ -187,7 +220,13 @@ function buildHitlRanges(
       const answerTime = answer ? validTime(answer.timestamp) : undefined;
       const end = answerTime ?? axisEnd;
       const id = `ask-${call.id}`;
-      ranges.push({ id, start, end: Math.max(start, end), source: 'explicit-ask', toolUseId: call.id });
+      ranges.push({
+        id,
+        start,
+        end: Math.max(start, end),
+        source: 'explicit-ask',
+        toolUseId: call.id,
+      });
       marks.push({
         id: `${id}-start`,
         type: 'ask',
@@ -213,10 +252,7 @@ function buildHitlRanges(
     if (resumeTime === undefined) continue;
     let precedingWork: WorkRange | undefined;
     for (const work of workRanges) {
-      if (
-        work.end < resumeTime &&
-        (precedingWork === undefined || work.end > precedingWork.end)
-      ) {
+      if (work.end < resumeTime && (precedingWork === undefined || work.end > precedingWork.end)) {
         precedingWork = work;
       }
     }
@@ -354,8 +390,7 @@ function assignChildParents(children: LogicalChild[], rootMessages: ParsedMessag
       const time = validTime(message.timestamp);
       if (time === undefined) continue;
       const ownerCanSpawn =
-        owner.id === null ||
-        owner.ranges.some((range) => range.start <= time && time <= range.end);
+        owner.id === null || owner.ranges.some((range) => range.start <= time && time <= range.end);
       if (!ownerCanSpawn) continue;
       for (const call of message.toolCalls) {
         if (spawnIds.has(call.id) && !spawnEvents.has(call.id)) {
@@ -381,8 +416,7 @@ function assignChildParents(children: LogicalChild[], rootMessages: ParsedMessag
           continue;
         }
         const child = children.find(
-          (candidate) =>
-            candidate.id !== owner.id && childMatchesIdentity(candidate, identity)
+          (candidate) => candidate.id !== owner.id && childMatchesIdentity(candidate, identity)
         );
         if (!child) continue;
         usedSpawnIds.add(sourceId);
@@ -434,7 +468,8 @@ function childLabel(child: LogicalChild): string {
 function buildChildRows(
   processes: Process[],
   rootMessages: ParsedMessage[],
-  fallbackTime: number
+  fallbackTime: number,
+  childTargets: Map<string, SwimlaneNavigationTarget>
 ): SwimlaneChildRow[] {
   const children = unionContinuations(processes, fallbackTime);
   assignChildParents(children, rootMessages);
@@ -478,6 +513,7 @@ function buildChildRows(
           endTime: new Date(range.end),
           durationMs: range.end - range.start,
           metrics: { ...process.metrics },
+          target: childTargets.get(process.id),
         };
       }),
     });
@@ -490,10 +526,16 @@ function buildChildRows(
 }
 
 function activeRange<T extends TimedRange>(ranges: T[], start: number, end: number): T | undefined {
-  return ranges.find((range) => range.start <= start && range.end >= end && range.end > range.start);
+  return ranges.find(
+    (range) => range.start <= start && range.end >= end && range.end > range.start
+  );
 }
 
-function activeWorkRange(workRanges: WorkRange[], start: number, end: number): WorkRange | undefined {
+function activeWorkRange(
+  workRanges: WorkRange[],
+  start: number,
+  end: number
+): WorkRange | undefined {
   let selected: WorkRange | undefined;
   for (const range of workRanges) {
     if (range.start > start || range.end < end || range.end <= range.start) continue;
@@ -587,6 +629,7 @@ function buildParentSegments(
       metrics: ownsMetrics ? { ...work.metrics } : undefined,
       requestId: work.requestId,
       chunkId: work.chunkId,
+      target: work.chunkId ? { kind: 'turn', groupId: work.chunkId } : undefined,
     };
   });
 
@@ -602,6 +645,7 @@ function buildParentSegments(
       metrics: { ...work.metrics },
       requestId: work.requestId,
       chunkId: work.chunkId,
+      target: work.chunkId ? { kind: 'turn', groupId: work.chunkId } : undefined,
     });
   }
 
@@ -631,7 +675,7 @@ export function buildSwimlane(
   const axisRange = numericRange(timestampCandidates);
   const axisStart = axisRange?.start ?? EPOCH;
   const axisEnd = axisRange?.end ?? EPOCH;
-  const childRows = buildChildRows(processes, mainMessages, axisStart);
+  const childRows = buildChildRows(processes, mainMessages, axisStart, buildChildTargets(chunks));
   const workRanges = buildWorkRanges(chunks, mainMessages);
   const hitl = buildHitlRanges(mainMessages, workRanges, axisEnd);
 
@@ -639,13 +683,7 @@ export function buildSwimlane(
     startTime: new Date(axisStart),
     endTime: new Date(axisEnd),
     durationMs: axisEnd - axisStart,
-    parentSegments: buildParentSegments(
-      axisStart,
-      axisEnd,
-      workRanges,
-      hitl.ranges,
-      processRanges
-    ),
+    parentSegments: buildParentSegments(axisStart, axisEnd, workRanges, hitl.ranges, processRanges),
     hitlMarks: hitl.marks,
     childRows,
   };

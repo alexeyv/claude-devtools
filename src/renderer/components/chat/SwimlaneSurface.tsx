@@ -4,9 +4,10 @@ import type {
   SessionMetrics,
   SwimlaneHitlMark,
   SwimlaneModel,
+  SwimlaneNavigationTarget,
   SwimlaneParentSegment,
 } from '@shared/types';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 const LABEL_COLUMN_WIDTH = 184;
 const MIN_CLOCK_WIDTH = 720;
@@ -14,7 +15,61 @@ const MIN_INTERVAL_WIDTH = 2;
 
 interface SwimlaneSurfaceProps {
   swimlane: SwimlaneModel;
+  onTarget?: (target: SwimlaneNavigationTarget) => void;
 }
+
+interface SwimlaneIntervalProps {
+  ariaLabel: string;
+  children?: ReactNode;
+  style: CSSProperties;
+  target?: SwimlaneNavigationTarget;
+  testId: string;
+  onTarget?: (target: SwimlaneNavigationTarget) => void;
+  dataSegmentType?: string;
+}
+
+const SwimlaneInterval = ({
+  ariaLabel,
+  children,
+  style,
+  target,
+  testId,
+  onTarget,
+  dataSegmentType,
+}: Readonly<SwimlaneIntervalProps>): JSX.Element => {
+  if (target && onTarget) {
+    return (
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        data-segment-type={dataSegmentType}
+        data-testid={testId}
+        onClick={() => onTarget(target)}
+        style={{
+          ...style,
+          appearance: 'none',
+          color: 'inherit',
+          cursor: 'pointer',
+          font: 'inherit',
+          padding: 0,
+          textAlign: 'left',
+        }}
+      >
+        {children}
+      </button>
+    );
+  }
+  return (
+    <div
+      aria-label={ariaLabel}
+      data-segment-type={dataSegmentType}
+      data-testid={testId}
+      style={style}
+    >
+      {children}
+    </div>
+  );
+};
 
 function timestamp(value: Date | string): number {
   const normalized = value instanceof Date ? value.getTime() : new Date(value).getTime();
@@ -158,7 +213,7 @@ const metricsStyle: CSSProperties = {
   zIndex: 4,
 };
 
-export const SwimlaneSurface = ({ swimlane }: SwimlaneSurfaceProps): JSX.Element => {
+export const SwimlaneSurface = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
   const axisStart = timestamp(swimlane.startTime);
   const axisEnd = timestamp(swimlane.endTime);
   const axisDuration = Math.max(0, axisEnd - axisStart);
@@ -234,15 +289,17 @@ export const SwimlaneSurface = ({ swimlane }: SwimlaneSurfaceProps): JSX.Element
                     ? metricsText(segment.durationMs, metrics)
                     : undefined;
                 return (
-                  <div
+                  <SwimlaneInterval
                     key={segment.id}
-                    aria-label={
+                    ariaLabel={
                       metricSummary
                         ? `Parent ${segment.type}: ${metricSummary}`
                         : `Parent ${segment.type}: ${formatDuration(segment.durationMs)}`
                     }
-                    data-segment-type={segment.type}
-                    data-testid={`swimlane-parent-segment-${segment.id}`}
+                    dataSegmentType={segment.type}
+                    testId={`swimlane-parent-segment-${segment.id}`}
+                    target={segment.target}
+                    onTarget={onTarget}
                     style={{
                       ...intervalBaseStyle,
                       ...intervalStyle(segment.startTime, segment.endTime, axisStart, axisDuration),
@@ -255,7 +312,7 @@ export const SwimlaneSurface = ({ swimlane }: SwimlaneSurfaceProps): JSX.Element
                         {metricSummary}
                       </span>
                     )}
-                  </div>
+                  </SwimlaneInterval>
                 );
               })}
               {swimlane.hitlMarks.map((mark) => {
@@ -318,10 +375,12 @@ export const SwimlaneSurface = ({ swimlane }: SwimlaneSurfaceProps): JSX.Element
                   {row.activations.map((activation) => {
                     const metricSummary = metricsText(activation.durationMs, activation.metrics);
                     return (
-                      <div
+                      <SwimlaneInterval
                         key={activation.id}
-                        aria-label={`${row.label} activation: ${metricSummary}`}
-                        data-testid={`swimlane-activation-${activation.id}`}
+                        ariaLabel={`${row.label} activation: ${metricSummary}`}
+                        testId={`swimlane-activation-${activation.id}`}
+                        target={activation.target}
+                        onTarget={onTarget}
                         style={{
                           ...intervalBaseStyle,
                           ...intervalStyle(
@@ -341,7 +400,7 @@ export const SwimlaneSurface = ({ swimlane }: SwimlaneSurfaceProps): JSX.Element
                         >
                           {metricSummary}
                         </span>
-                      </div>
+                      </SwimlaneInterval>
                     );
                   })}
                 </div>

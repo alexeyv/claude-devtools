@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildSwimlane } from '../../../../src/main/services/analysis/SwimlaneBuilder';
 import type {
+  Chunk,
   ParsedMessage,
   Process,
   SessionMetrics,
@@ -46,7 +47,12 @@ function message(
   };
 }
 
-function process(id: string, start: number, end: number, overrides: Partial<Process> = {}): Process {
+function process(
+  id: string,
+  start: number,
+  end: number,
+  overrides: Partial<Process> = {}
+): Process {
   return {
     id,
     filePath: `/tmp/${id}.jsonl`,
@@ -76,6 +82,133 @@ function segmentTypes(model: ReturnType<typeof buildSwimlane>): string[] {
 }
 
 describe('buildSwimlane', () => {
+  it('projects exact parent and existing-card child targets without timing fallbacks', () => {
+    const parentMessage = message('owned-work', 0, {
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    const root = process('root-card', 1, 3, { parentTaskId: 'spawn-root' });
+    const nestedWithCard = process('nested-card', 2, 4, { parentTaskId: 'spawn-nested' });
+    const noCard = process('no-card', 4, 5);
+    const chunk: Chunk = {
+      id: 'ai-owned-work',
+      chunkType: 'ai',
+      responses: [parentMessage],
+      processes: [root, nestedWithCard],
+      sidechainMessages: [],
+      toolExecutions: [],
+      startTime: at(0),
+      endTime: at(4),
+      durationMs: 4000,
+      metrics: metrics(),
+    };
+
+    const model = buildSwimlane([chunk], [root, nestedWithCard, noCard], [parentMessage]);
+
+    expect(model.parentSegments.find((segment) => segment.type === 'work')?.target).toEqual({
+      kind: 'turn',
+      groupId: chunk.id,
+    });
+    expect(model.childRows.find((row) => row.id === root.id)?.activations[0].target).toEqual({
+      kind: 'subagent',
+      groupId: chunk.id,
+      processId: root.id,
+      spawnId: 'spawn-root',
+    });
+    expect(
+      model.childRows.find((row) => row.id === nestedWithCard.id)?.activations[0].target
+    ).toEqual({
+      kind: 'subagent',
+      groupId: chunk.id,
+      processId: nestedWithCard.id,
+      spawnId: 'spawn-nested',
+    });
+    expect(
+      model.childRows.find((row) => row.id === noCard.id)?.activations[0].target
+    ).toBeUndefined();
+  });
+
+  it('projects a timing-linked orphan process to its rendered empty-spawn card identity', () => {
+    const orphan = process('timing-linked-card', 2, 4);
+    const chunk: Chunk = {
+      id: 'ai-timing-owner',
+      chunkType: 'ai',
+      responses: [message('timing-owner-work', 1)],
+      processes: [orphan],
+      sidechainMessages: [],
+      toolExecutions: [],
+      startTime: at(1),
+      endTime: at(5),
+      durationMs: 4000,
+      metrics: metrics(),
+    };
+
+    const model = buildSwimlane([chunk], [orphan], chunk.responses);
+
+    expect(model.childRows[0].activations[0].target).toEqual({
+      kind: 'subagent',
+      groupId: chunk.id,
+      processId: orphan.id,
+      spawnId: '',
+    });
+  });
+
+  it('keeps clicked continuation identity and drops ambiguous ownership candidates', () => {
+    const first = process('continued-first', 1, 2, {
+      parentTaskId: 'spawn-first',
+      messages: [message('continued-link', 1, { isSidechain: true })],
+    });
+    const continuation = process('continued-next', 3, 4, {
+      parentTaskId: 'spawn-next',
+      messages: [
+        message('continued-next-message', 3, {
+          isSidechain: true,
+          parentUuid: 'continued-link',
+        }),
+      ],
+    });
+    const ambiguous = process('ambiguous-card', 5, 6, { parentTaskId: 'spawn-ambiguous' });
+    const makeChunk = (id: string, ownedProcesses: Process[]): Chunk => ({
+      id,
+      chunkType: 'ai',
+      responses: [],
+      processes: ownedProcesses,
+      sidechainMessages: [],
+      toolExecutions: [],
+      startTime: at(0),
+      endTime: at(6),
+      durationMs: 6000,
+      metrics: metrics(),
+    });
+
+    const model = buildSwimlane(
+      [
+        makeChunk('ai-owner', [first, continuation, ambiguous, ambiguous]),
+        makeChunk('ai-other-owner', [ambiguous]),
+      ],
+      [first, continuation, ambiguous],
+      []
+    );
+    const continuedRow = model.childRows.find((row) => row.id === first.id);
+
+    expect(continuedRow?.activations.map((activation) => activation.target)).toEqual([
+      {
+        kind: 'subagent',
+        groupId: 'ai-owner',
+        processId: first.id,
+        spawnId: 'spawn-first',
+      },
+      {
+        kind: 'subagent',
+        groupId: 'ai-owner',
+        processId: continuation.id,
+        spawnId: 'spawn-next',
+      },
+    ]);
+    expect(
+      model.childRows.find((row) => row.id === ambiguous.id)?.activations[0].target
+    ).toBeUndefined();
+  });
+
   it('keeps production at request-group time and classifies child-only silence', () => {
     const parent = [
       message('work-1-stream', 0, {
@@ -100,9 +233,7 @@ describe('buildSwimlane', () => {
     expect(model.startTime).toEqual(at(0));
     expect(model.endTime).toEqual(at(6));
     expect(segmentTypes(model)).toEqual(['work', 'idle', 'child-wait', 'idle', 'work']);
-    const requestWork = model.parentSegments.find(
-      (segment) => segment.requestId === 'request-1'
-    );
+    const requestWork = model.parentSegments.find((segment) => segment.requestId === 'request-1');
     expect(requestWork).toMatchObject({
       startTime: at(0),
       endTime: at(1),
@@ -113,6 +244,43 @@ describe('buildSwimlane', () => {
         cacheReadTokens: 11,
         cacheCreationTokens: 13,
       },
+    });
+  });
+
+  it('targets the exact owner for nonzero ranged work with same-request responses', () => {
+    const responses = [
+      message('ranged-stream', 3, {
+        requestId: 'request-ranged',
+        usage: { input_tokens: 2, output_tokens: 1 },
+      }),
+      message('ranged-final', 7, {
+        requestId: 'request-ranged',
+        usage: { input_tokens: 8, output_tokens: 5 },
+      }),
+    ];
+    const chunk: Chunk = {
+      id: 'ai-ranged-owner',
+      chunkType: 'ai',
+      responses,
+      processes: [],
+      sidechainMessages: [],
+      toolExecutions: [],
+      startTime: at(3),
+      endTime: at(7),
+      durationMs: 4000,
+      metrics: metrics(),
+    };
+
+    const model = buildSwimlane([chunk], [], responses);
+    const rangedWork = model.parentSegments.find(
+      (segment) => segment.requestId === 'request-ranged'
+    );
+
+    expect(rangedWork).toMatchObject({
+      startTime: at(3),
+      endTime: at(7),
+      durationMs: 4000,
+      target: { kind: 'turn', groupId: chunk.id },
     });
   });
 
@@ -184,7 +352,9 @@ describe('buildSwimlane', () => {
     );
 
     const waitSegments = model.parentSegments.filter((segment) => segment.type !== 'work');
-    expect(waitSegments.map((segment) => [segment.type, segment.startTime, segment.endTime])).toEqual([
+    expect(
+      waitSegments.map((segment) => [segment.type, segment.startTime, segment.endTime])
+    ).toEqual([
       ['HITL-wait', at(0), at(3)],
       ['child-wait', at(3), at(4)],
       ['idle', at(4), at(5)],
@@ -605,8 +775,12 @@ describe('buildSwimlane', () => {
     expect(new Set(model.parentSegments.map((segment) => segment.id)).size).toBe(
       model.parentSegments.length
     );
-    expect(workSegments.filter((segment) => segment.requestId === 'outer' && segment.metrics)).toHaveLength(1);
-    expect(workSegments.filter((segment) => segment.requestId === 'inner' && segment.metrics)).toHaveLength(1);
+    expect(
+      workSegments.filter((segment) => segment.requestId === 'outer' && segment.metrics)
+    ).toHaveLength(1);
+    expect(
+      workSegments.filter((segment) => segment.requestId === 'inner' && segment.metrics)
+    ).toHaveLength(1);
     const points = workSegments.filter(
       (segment) => segment.startTime.getTime() === at(9).getTime() && segment.durationMs === 0
     );

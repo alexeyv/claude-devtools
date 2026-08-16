@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { COLOR_TEXT_MUTED, COLOR_TEXT_SECONDARY } from '@renderer/constants/cssVariables';
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useStore } from '@renderer/store';
+import { getSubagentDisplayItemId } from '@renderer/types/tabs';
 import { enhanceAIGroup, type PrecedingSlashInfo } from '@renderer/utils/aiGroupEnhancer';
 import { extractSlashInfo, isCommandContent } from '@shared/utils/contentSanitizer';
 import { getModelColorClass } from '@shared/utils/modelParser';
@@ -85,6 +86,8 @@ interface AIChatGroupProps {
   highlightColor?: TriggerColor;
   /** Register ref for individual tool items (for precise scroll targeting) */
   registerToolRef?: (toolId: string, el: HTMLElement | null) => void;
+  /** Register exact outer subagent cards for lane navigation. */
+  registerSubagentRef?: (cardId: string, el: HTMLElement | null) => void;
 }
 
 /**
@@ -97,6 +100,9 @@ function containsToolUseId(items: AIGroupDisplayItem[], toolUseId: string): bool
     }
     // Check nested subagent messages for the tool ID
     if (item.type === 'subagent' && item.subagent.messages) {
+      if (item.subagent.id === toolUseId || item.subagent.parentTaskId === toolUseId) {
+        return true;
+      }
       for (const msg of item.subagent.messages) {
         if (msg.toolCalls?.some((tc) => tc.id === toolUseId)) {
           return true;
@@ -125,6 +131,7 @@ const AIChatGroupInner = ({
   highlightToolUseId,
   highlightColor,
   registerToolRef,
+  registerSubagentRef,
 }: Readonly<AIChatGroupProps>): React.JSX.Element => {
   // Per-tab UI state for expansion (completely isolated per tab)
   const {
@@ -281,12 +288,15 @@ const AIChatGroupInner = ({
         }
         // For subagents, expand the subagent item
         if (item.type === 'subagent' && item.subagent.messages) {
+          if (item.subagent.id === toolUseId || item.subagent.parentTaskId === toolUseId) {
+            return getSubagentDisplayItemId(item.subagent.id, item.subagent.parentTaskId ?? '');
+          }
           for (const msg of item.subagent.messages) {
             if (
               msg.toolCalls?.some((tc) => tc.id === toolUseId) ||
               msg.toolResults?.some((tr) => tr.toolUseId === toolUseId)
             ) {
-              return `subagent-${item.subagent.id}-${i}`;
+              return getSubagentDisplayItemId(item.subagent.id, item.subagent.parentTaskId ?? '');
             }
           }
         }
@@ -363,10 +373,12 @@ const AIChatGroupInner = ({
     }
 
     // If any subagents in this group need their trace expanded for search, expand them
-    for (let i = 0; i < enhanced.displayItems.length; i++) {
-      const item = enhanced.displayItems[i];
+    for (const item of enhanced.displayItems) {
       if (item.type === 'subagent' && searchExpandedSubagentIds.has(item.subagent.id)) {
-        const subagentItemId = `subagent-${item.subagent.id}-${i}`;
+        const subagentItemId = getSubagentDisplayItemId(
+          item.subagent.id,
+          item.subagent.parentTaskId ?? ''
+        );
         expandDisplayItem(aiGroup.id, subagentItemId);
       }
     }
@@ -509,6 +521,7 @@ const AIChatGroupInner = ({
             highlightColor={highlightColor}
             notificationColorMap={notificationColorMap}
             registerToolRef={registerToolRef}
+            registerSubagentRef={registerSubagentRef}
           />
         </div>
       )}

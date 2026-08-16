@@ -5,6 +5,7 @@ import { useTabNavigationController } from '@renderer/hooks/useTabNavigationCont
 import { useTabUI } from '@renderer/hooks/useTabUI';
 import { useVisibleAIGroup } from '@renderer/hooks/useVisibleAIGroup';
 import { useStore } from '@renderer/store';
+import { createSwimlaneNavigationRequest } from '@renderer/types/tabs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronsDown } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
@@ -22,6 +23,7 @@ import { ChatHistoryLoadingState } from './ChatHistoryLoadingState';
 import { SwimlaneSurface } from './SwimlaneSurface';
 
 import type { ContextInjection } from '@renderer/types/contextInjection';
+import type { SwimlaneNavigationTarget } from '@shared/types';
 
 /**
  * Waits for two requestAnimationFrame cycles, allowing the virtualizer to render.
@@ -56,6 +58,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     savedScrollTop,
     saveScrollPosition,
     expandAIGroup,
+    expandDisplayItem,
     expandSubagentTrace,
     selectedContextPhase,
     setSelectedContextPhase,
@@ -69,6 +72,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     openTabs,
     activeTabId,
     consumeTabNavigation,
+    enqueueTabNavigation,
     setSearchQuery,
     syncSearchMatchesWithRendered,
     selectSearchMatch,
@@ -81,6 +85,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
       openTabs: s.openTabs,
       activeTabId: s.activeTabId,
       consumeTabNavigation: s.consumeTabNavigation,
+      enqueueTabNavigation: s.enqueueTabNavigation,
       setSearchQuery: s.setSearchQuery,
       syncSearchMatchesWithRendered: s.syncSearchMatchesWithRendered,
       selectSearchMatch: s.selectSearchMatch,
@@ -198,6 +203,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
   const aiGroupRefs = useRef<Map<string, HTMLElement>>(new Map());
   const chatItemRefs = useRef<Map<string, HTMLElement>>(new Map());
   const toolItemRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const subagentCardRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   // Shared scroll container ref - used by both auto-scroll and navigation coordinator
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -259,6 +265,16 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     setSwimlaneVisible(false);
     await waitForDoubleRaf();
   }, [cancelPendingScrollRestore, isSwimlaneVisible, setSwimlaneVisible]);
+
+  const handleSwimlaneTarget = useCallback(
+    (target: SwimlaneNavigationTarget): void => {
+      if (!effectiveTabId) return;
+      void revealTurnList().then(() => {
+        enqueueTabNavigation(effectiveTabId, createSwimlaneNavigationRequest(target));
+      });
+    },
+    [effectiveTabId, enqueueTabNavigation, revealTurnList]
+  );
 
   const isSearchActive = searchQuery.trim().length > 0;
   const shouldVirtualize = (conversation?.items.length ?? 0) >= VIRTUALIZATION_THRESHOLD;
@@ -344,7 +360,9 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     aiGroupRefs,
     chatItemRefs,
     toolItemRefs,
+    subagentCardRefs,
     expandAIGroup,
+    expandDisplayItem,
     expandSubagentTrace,
     scrollContainerRef,
     stickyOffset: STICKY_BUTTON_OFFSET,
@@ -883,6 +901,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
     else toolItemRefs.current.delete(toolId);
   }, []);
 
+  const registerSubagentRef = useCallback((cardId: string, el: HTMLElement | null) => {
+    if (el) subagentCardRefs.current.set(cardId, el);
+    else subagentCardRefs.current.delete(cardId);
+  }, []);
+
   // Loading state
   if (conversationLoading) return <ChatHistoryLoadingState />;
 
@@ -993,6 +1016,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                               registerChatItemRef={registerChatItemRef}
                               registerAIGroupRef={registerAIGroupRefCombined}
                               registerToolRef={registerToolRef}
+                              registerSubagentRef={registerSubagentRef}
                             />
                           </div>
                         );
@@ -1011,6 +1035,7 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
                         registerChatItemRef={registerChatItemRef}
                         registerAIGroupRef={registerAIGroupRefCombined}
                         registerToolRef={registerToolRef}
+                        registerSubagentRef={registerSubagentRef}
                       />
                     ))
                   )}
@@ -1019,7 +1044,9 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
             </div>
           </div>
 
-          {isSwimlaneActive && activeSwimlane && <SwimlaneSurface swimlane={activeSwimlane} />}
+          {isSwimlaneActive && activeSwimlane && (
+            <SwimlaneSurface swimlane={activeSwimlane} onTarget={handleSwimlaneTarget} />
+          )}
         </div>
 
         {/* Scroll to bottom button */}

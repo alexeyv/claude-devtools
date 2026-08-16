@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SwimlaneSurface } from '../../../../src/renderer/components/chat/SwimlaneSurface';
 
-import type { SessionMetrics, SwimlaneModel } from '../../../../src/main/types';
+import type {
+  SessionMetrics,
+  SwimlaneModel,
+  SwimlaneNavigationTarget,
+} from '../../../../src/main/types';
 
 const BASE_TIME = new Date('2026-08-16T12:00:00.000Z').getTime();
 const LONG_LABEL = `${'x'.repeat(59)}😀suffix after the first sixty code points`;
@@ -151,12 +155,15 @@ function mixedModel(): SwimlaneModel {
   };
 }
 
-async function render(model: SwimlaneModel): Promise<HTMLElement> {
+async function render(
+  model: SwimlaneModel,
+  onTarget?: (target: SwimlaneNavigationTarget) => void
+): Promise<HTMLElement> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   mountedRoot = createRoot(host);
   await act(async () => {
-    mountedRoot?.render(React.createElement(SwimlaneSurface, { swimlane: model }));
+    mountedRoot?.render(React.createElement(SwimlaneSurface, { swimlane: model, onTarget }));
     await Promise.resolve();
   });
   return host;
@@ -176,6 +183,38 @@ afterEach(() => {
 });
 
 describe('SwimlaneSurface', () => {
+  it('uses button semantics only for exact projected targets', async () => {
+    const model = mixedModel();
+    const parentTarget = { kind: 'turn', groupId: 'ai-work' } as const;
+    const childTarget = {
+      kind: 'subagent',
+      groupId: 'ai-work',
+      processId: 'process-first',
+      spawnId: 'spawn-first',
+    } as const;
+    model.parentSegments[0].target = parentTarget;
+    model.childRows[0].activations[0].target = childTarget;
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+
+    const work = element(host, 'swimlane-parent-segment-work');
+    const silent = element(host, 'swimlane-parent-segment-idle');
+    const child = element(host, 'swimlane-activation-child-first');
+    const untargetedChild = element(host, 'swimlane-activation-nested-activation');
+    expect(work.tagName).toBe('BUTTON');
+    expect(child.tagName).toBe('BUTTON');
+    expect(work.style.cursor).toBe('pointer');
+    expect(silent.tagName).toBe('DIV');
+    expect(untargetedChild.tagName).toBe('DIV');
+
+    await act(async () => {
+      work.click();
+      child.click();
+      work.click();
+    });
+    expect(onTarget.mock.calls).toEqual([[parentTarget], [childTarget], [parentTarget]]);
+  });
+
   it('draws the mixed orchestration matrix on one axis without merging continuations', async () => {
     const host = await render(mixedModel());
 

@@ -7,6 +7,7 @@ import { generateUUID } from '@renderer/utils/stringUtils';
 
 import type { Session } from './data';
 import type { TriggerColor } from '@shared/constants/triggerColors';
+import type { SwimlaneNavigationTarget } from '@shared/types';
 
 // =============================================================================
 // Navigation Request Types
@@ -53,18 +54,35 @@ export interface SearchNavigationPayload {
  * Each click/action creates a new request with a unique nonce (id).
  * The nonce ensures repeated clicks produce new navigations.
  */
-export interface TabNavigationRequest {
+interface TabNavigationRequestBase {
   /** Unique nonce per click/action (crypto.randomUUID) */
   id: string;
-  /** Kind of navigation */
-  kind: 'error' | 'search' | 'autoBottom';
-  /** Source of the navigation action */
-  source: 'notification' | 'triggerPreview' | 'commandPalette' | 'sessionOpen';
   /** Highlight color to use */
   highlight: TriggerColor | 'yellow' | 'none';
-  /** Navigation payload (depends on kind) */
-  payload: ErrorNavigationPayload | SearchNavigationPayload | Record<string, never>;
 }
+
+/** Navigation requests retain a strict payload/source contract for each kind. */
+export type TabNavigationRequest =
+  | (TabNavigationRequestBase & {
+      kind: 'error';
+      source: 'notification' | 'triggerPreview';
+      payload: ErrorNavigationPayload;
+    })
+  | (TabNavigationRequestBase & {
+      kind: 'search';
+      source: 'commandPalette';
+      payload: SearchNavigationPayload;
+    })
+  | (TabNavigationRequestBase & {
+      kind: 'swimlane';
+      source: 'swimlane';
+      payload: SwimlaneNavigationTarget;
+    })
+  | (TabNavigationRequestBase & {
+      kind: 'autoBottom';
+      source: 'sessionOpen';
+      payload: Record<string, never>;
+    });
 
 // =============================================================================
 // Core Types
@@ -219,12 +237,30 @@ export function createSearchNavigationRequest(
   };
 }
 
+/** Create a navigation request for an exact target projected into the swimlane model. */
+export function createSwimlaneNavigationRequest(
+  payload: SwimlaneNavigationTarget
+): TabNavigationRequest {
+  return {
+    id: generateUUID(),
+    kind: 'swimlane',
+    source: 'swimlane',
+    highlight: 'blue',
+    payload,
+  };
+}
+
+/** Stable identity shared by the projected target, expansion state, and card ref. */
+export function getSubagentDisplayItemId(processId: string, spawnId = ''): string {
+  return `subagent-${processId.length}:${processId}-${spawnId.length}:${spawnId}`;
+}
+
 /**
  * Type guard for error navigation payload.
  */
 export function isErrorPayload(
   request: TabNavigationRequest
-): request is TabNavigationRequest & { payload: ErrorNavigationPayload } {
+): request is Extract<TabNavigationRequest, { kind: 'error' }> {
   return request.kind === 'error';
 }
 
@@ -233,6 +269,13 @@ export function isErrorPayload(
  */
 export function isSearchPayload(
   request: TabNavigationRequest
-): request is TabNavigationRequest & { payload: SearchNavigationPayload } {
+): request is Extract<TabNavigationRequest, { kind: 'search' }> {
   return request.kind === 'search';
+}
+
+/** Type guard for exact swimlane targets. */
+export function isSwimlanePayload(
+  request: TabNavigationRequest
+): request is Extract<TabNavigationRequest, { kind: 'swimlane' }> {
+  return request.kind === 'swimlane';
 }

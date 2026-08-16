@@ -25,6 +25,8 @@ interface ChatHistoryItemProps {
   readonly registerAIGroupRef: (groupId: string) => (el: HTMLElement | null) => void;
   /** Register ref for individual tool items (for precise scroll targeting) */
   readonly registerToolRef: (toolId: string, el: HTMLElement | null) => void;
+  /** Register an exact outer subagent card for lane navigation. */
+  readonly registerSubagentRef: (cardId: string, el: HTMLElement | null) => void;
 }
 
 /**
@@ -57,6 +59,7 @@ const ChatHistoryItemInner = ({
   registerChatItemRef,
   registerAIGroupRef,
   registerToolRef,
+  registerSubagentRef,
 }: ChatHistoryItemProps): JSX.Element | null => {
   switch (item.type) {
     case 'user': {
@@ -110,6 +113,7 @@ const ChatHistoryItemInner = ({
       return (
         <div
           ref={registerAIGroupRef(item.group.id)}
+          data-chat-group-id={item.group.id}
           className={`rounded-lg transition-[background-color,box-shadow] duration-[3000ms] ease-out ${hl.className}`}
           style={hl.style}
         >
@@ -118,6 +122,7 @@ const ChatHistoryItemInner = ({
             highlightToolUseId={toolUseIdForGroup}
             highlightColor={highlightColor}
             registerToolRef={registerToolRef}
+            registerSubagentRef={registerSubagentRef}
           />
         </div>
       );

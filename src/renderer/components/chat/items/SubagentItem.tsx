@@ -54,6 +54,10 @@ interface SubagentItemProps {
   notificationColorMap?: Map<string, TriggerColor>;
   /** Optional callback to register tool element refs for scroll targeting */
   registerToolRef?: (toolId: string, el: HTMLDivElement | null) => void;
+  /** Stable outer-card identity used by exact lane navigation. */
+  cardRefId: string;
+  /** Optional callback to register this exact outer card. */
+  registerSubagentRef?: (cardId: string, el: HTMLDivElement | null) => void;
 }
 
 // =============================================================================
@@ -70,6 +74,8 @@ export const SubagentItem: React.FC<SubagentItemProps> = ({
   highlightColor,
   notificationColorMap,
   registerToolRef,
+  cardRefId,
+  registerSubagentRef,
 }) => {
   const description = subagent.description ?? step.content.subagentDescription ?? 'Subagent';
   const subagentType = subagent.subagentType ?? 'Task';
@@ -104,6 +110,9 @@ export const SubagentItem: React.FC<SubagentItemProps> = ({
   // Also matches when the highlight targets the parent Task tool_use that spawned this subagent
   const containsHighlightedError = useMemo(() => {
     if (!highlightToolUseId) return false;
+    // Timing-linked subagents do not have a parent Task ID, so exact lane
+    // navigation highlights them by their stable process identity.
+    if (subagent.id === highlightToolUseId) return true;
     // Match parent Task tool_use ID (trigger matched the Task call itself)
     if (subagent.parentTaskId === highlightToolUseId) return true;
     // Match inner tool calls/results within the subagent
@@ -113,7 +122,7 @@ export const SubagentItem: React.FC<SubagentItemProps> = ({
       if (msg.toolResults?.some((tr) => tr.toolUseId === highlightToolUseId)) return true;
     }
     return false;
-  }, [highlightToolUseId, subagent.parentTaskId, subagent.messages]);
+  }, [highlightToolUseId, subagent.id, subagent.parentTaskId, subagent.messages]);
 
   // Build display items
   const displayItems = useMemo(() => {
@@ -187,8 +196,9 @@ export const SubagentItem: React.FC<SubagentItemProps> = ({
       if (subagent.parentTaskId && registerToolRef) {
         registerToolRef(subagent.parentTaskId, el);
       }
+      registerSubagentRef?.(cardRefId, el);
     },
-    [subagent.parentTaskId, registerToolRef]
+    [cardRefId, registerSubagentRef, subagent.parentTaskId, registerToolRef]
   );
 
   // Cumulative metrics for team members — show total output generated
@@ -219,11 +229,14 @@ export const SubagentItem: React.FC<SubagentItemProps> = ({
   if (isShutdownOnly && teamColors && subagent.team) {
     return (
       <div
-        className="flex items-center gap-2 rounded-md px-3 py-1.5"
+        ref={outerCardRef}
+        data-subagent-card-id={cardRefId}
+        className={`flex items-center gap-2 rounded-md px-3 py-1.5 transition-[background-color,box-shadow] duration-300 ${outerHighlight.className}`}
         style={{
           backgroundColor: CARD_BG,
           border: CARD_BORDER_STYLE,
           opacity: 0.6,
+          ...outerHighlight.style,
         }}
       >
         <span
@@ -257,6 +270,7 @@ export const SubagentItem: React.FC<SubagentItemProps> = ({
   return (
     <div
       ref={outerCardRef}
+      data-subagent-card-id={cardRefId}
       className={`overflow-hidden rounded-md transition-[background-color,box-shadow] duration-300 ${outerHighlight.className}`}
       style={{
         backgroundColor: CARD_BG,

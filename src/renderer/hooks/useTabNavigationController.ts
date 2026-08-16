@@ -22,7 +22,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { isErrorPayload, isSearchPayload } from '@renderer/types/tabs';
+import {
+  getSubagentDisplayItemId,
+  isErrorPayload,
+  isSearchPayload,
+  isSwimlanePayload,
+} from '@renderer/types/tabs';
 
 import {
   calculateCenteredScrollTop,
@@ -69,8 +74,12 @@ interface UseTabNavigationControllerOptions {
   chatItemRefs: React.MutableRefObject<Map<string, HTMLElement>>;
   /** Refs to individual tool item DOM elements */
   toolItemRefs: React.MutableRefObject<Map<string, HTMLElement>>;
+  /** Refs to exact outer SubagentItem cards. */
+  subagentCardRefs: React.MutableRefObject<Map<string, HTMLElement>>;
   /** Function to expand an AI group (per-tab state) */
   expandAIGroup: (groupId: string) => void;
+  /** Function to expand one display item inside an AI group. */
+  expandDisplayItem: (groupId: string, itemId: string) => void;
   /** Ref to scroll container */
   scrollContainerRef: React.RefObject<HTMLDivElement>;
   /** Height of sticky elements at top of scroll container */
@@ -123,7 +132,9 @@ export function useTabNavigationController(
     aiGroupRefs,
     chatItemRefs,
     toolItemRefs,
+    subagentCardRefs,
     expandAIGroup,
+    expandDisplayItem,
     scrollContainerRef,
     stickyOffset = 0,
     ensureGroupVisible,
@@ -146,12 +157,16 @@ export function useTabNavigationController(
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastFailureAtRef = useRef<number>(0);
 
-  // Clear highlight and reset state
-  const handleHighlightEnd = useCallback(() => {
+  const clearHighlightState = useCallback(() => {
     setHighlightedGroupId(null);
     setCurrentToolUseId(null);
     setIsSearchHighlight(false);
     setHighlightColor(undefined);
+  }, []);
+
+  // Clear highlight and reset state
+  const handleHighlightEnd = useCallback(() => {
+    clearHighlightState();
     setPhase('idle');
     activeRequestIdRef.current = null;
 
@@ -159,7 +174,7 @@ export function useTabNavigationController(
       clearTimeout(highlightTimerRef.current);
       highlightTimerRef.current = null;
     }
-  }, []);
+  }, [clearHighlightState]);
 
   // Abort any in-progress navigation
   const abortNavigation = useCallback(() => {
@@ -368,10 +383,90 @@ export function useTabNavigationController(
     ]
   );
 
+  // Execute exact navigation projected by the swimlane model. Unlike error navigation,
+  // this path never falls back to timestamps or another group/card.
+  const executeSwimlaneNavigation = useCallback(
+    async (request: TabNavigationRequest, abortSignal: AbortSignal): Promise<boolean> => {
+      if (!isSwimlanePayload(request) || !conversation) return false;
+      const target = request.payload;
+      const targetItem = conversation.items.find(
+        (item) => item.type === 'ai' && item.group.id === target.groupId
+      );
+      if (targetItem?.type !== 'ai') return false;
+
+      setPhase('expanding');
+
+      let targetRef: React.MutableRefObject<Map<string, HTMLElement>> = aiGroupRefs;
+      let targetRefId = target.groupId;
+      if (target.kind === 'subagent') {
+        const spawnId = target.spawnId ?? '';
+        const processExists = targetItem.group.processes.some(
+          (process) => process.id === target.processId && (process.parentTaskId ?? '') === spawnId
+        );
+        if (!processExists) return false;
+
+        targetRefId = getSubagentDisplayItemId(target.processId, spawnId);
+        targetRef = subagentCardRefs;
+        expandAIGroup(target.groupId);
+        expandDisplayItem(target.groupId, targetRefId);
+        expandSubagentTrace(target.processId);
+      }
+
+      await ensureGroupVisible?.(target.groupId);
+      if (abortSignal.aborted) return false;
+
+      const startedAt = Date.now();
+      let element: HTMLElement | undefined;
+      while (!abortSignal.aborted && Date.now() - startedAt < 1200) {
+        const candidate = targetRef.current.get(targetRefId);
+        element = candidate?.isConnected ? candidate : undefined;
+        if (element) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await ensureGroupVisible?.(target.groupId);
+      }
+      if (abortSignal.aborted || !element?.isConnected) return false;
+
+      await waitForElementStability(element, 300, 2);
+      if (abortSignal.aborted || !element.isConnected) return false;
+
+      setPhase('scrolling');
+      if (!element.isConnected) return false;
+      const container = scrollContainerRef.current;
+      if (container) {
+        const targetScrollTop = calculateCenteredScrollTop(element, container, stickyOffset);
+        container.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
+        await waitForScrollEnd(container, 400);
+      } else {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      if (abortSignal.aborted) return false;
+
+      setHighlightedGroupId(target.groupId);
+      setCurrentToolUseId(target.kind === 'subagent' ? target.spawnId || target.processId : null);
+      setIsSearchHighlight(false);
+      setHighlightColor(request.highlight === 'none' ? undefined : request.highlight);
+      setPhase('highlighting');
+      return true;
+    },
+    [
+      aiGroupRefs,
+      conversation,
+      ensureGroupVisible,
+      expandAIGroup,
+      expandDisplayItem,
+      expandSubagentTrace,
+      scrollContainerRef,
+      stickyOffset,
+      subagentCardRefs,
+    ]
+  );
+
   // Main navigation executor
   const executeNavigation = useCallback(
     async (request: TabNavigationRequest): Promise<void> => {
       abortNavigation();
+      clearHighlightState();
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
@@ -382,6 +477,8 @@ export function useTabNavigationController(
           success = await executeErrorNavigation(request, abortController.signal);
         } else if (request.kind === 'search') {
           success = await executeSearchNavigation(request, abortController.signal);
+        } else if (request.kind === 'swimlane') {
+          success = await executeSwimlaneNavigation(request, abortController.signal);
         } else if (request.kind === 'autoBottom') {
           // autoBottom is handled by useAutoScrollBottom naturally
           // Just consume the request and stay idle
@@ -430,11 +527,13 @@ export function useTabNavigationController(
       abortNavigation,
       executeErrorNavigation,
       executeSearchNavigation,
+      executeSwimlaneNavigation,
       consumeTabNavigation,
       tabId,
       highlightDuration,
       handleHighlightEnd,
       setSearchQuery,
+      clearHighlightState,
     ]
   );
 
