@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ChunkBuilder } from '../../../../src/main/services/analysis/ChunkBuilder';
 import { isAIChunk, isCompactChunk, isSystemChunk, isUserChunk } from '../../../../src/main/types';
+import { extractToolCalls } from '../../../../src/main/utils/toolExtraction';
 import type { ParsedMessage, Process } from '../../../../src/main/types';
 
 // =============================================================================
@@ -362,6 +363,53 @@ describe('ChunkBuilder', () => {
         if (isAIChunk(chunks[0])) {
           expect(chunks[0].processes).toHaveLength(1);
           expect(chunks[0].processes[0].id).toBe(subagent.id);
+        }
+      });
+
+      it('should link parallel Agent children by tool id without timing fallback for a mismatched id', () => {
+        const startTime = new Date('2026-08-16T10:00:00Z');
+        const agentBlocks = ['agent-1', 'agent-2', 'agent-3'].map((id) => ({
+          type: 'tool_use' as const,
+          id,
+          name: 'Agent',
+          input: { description: `Child ${id}`, subagent_type: 'general-purpose' },
+        }));
+        const messages = [
+          createMessage({
+            type: 'assistant',
+            timestamp: startTime,
+            content: agentBlocks,
+            toolCalls: extractToolCalls(agentBlocks),
+          }),
+        ];
+        const subagents = agentBlocks.map((block, index) =>
+          createSubagent({
+            id: `process-${index + 1}`,
+            parentTaskId: block.id,
+            startTime: new Date(startTime.getTime() + index),
+          })
+        );
+        const mismatchedSubagent = createSubagent({
+          id: 'process-other-chunk',
+          parentTaskId: 'agent-from-another-chunk',
+          startTime,
+        });
+
+        const chunks = builder.buildChunks(messages, [...subagents, mismatchedSubagent]);
+
+        expect(chunks).toHaveLength(1);
+        expect(isAIChunk(chunks[0])).toBe(true);
+        if (isAIChunk(chunks[0])) {
+          expect(chunks[0].processes.map((process) => process.id)).toEqual([
+            'process-1',
+            'process-2',
+            'process-3',
+          ]);
+          expect(chunks[0].processes.map((process) => process.parentTaskId)).toEqual([
+            'agent-1',
+            'agent-2',
+            'agent-3',
+          ]);
         }
       });
     });

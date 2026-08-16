@@ -136,10 +136,10 @@ function separateTaskExecutions(
       const callInfo = toolCalls.get(msg.sourceToolUseID);
       if (!callInfo) continue;
 
-      // Check if this is a Task call with a subagent
+      // Check if this is a spawn call with a subagent
       const subagent = taskIdToSubagent.get(msg.sourceToolUseID);
-      if (callInfo.call.name === 'Task' && subagent) {
-        // This is a Task execution
+      if (callInfo.call.isTask && subagent) {
+        // This is a task execution
         taskExecutions.push({
           taskCall: callInfo.call,
           taskCallTimestamp: callInfo.timestamp,

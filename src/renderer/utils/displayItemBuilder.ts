@@ -5,6 +5,7 @@
  */
 
 import { parseAllTeammateMessages } from '@shared/utils/teammateMessageParser';
+import { isSpawnToolName } from '@shared/utils/toolNames';
 
 import { estimateTokens, formatToolInput, formatToolResult, toDate } from './aiGroupHelpers';
 import { extractSlashes, type PrecedingSlashInfo } from './slashCommandExtractor';
@@ -161,10 +162,10 @@ export function buildDisplayItems(
       case 'tool_call': {
         const linkedTool = linkedTools.get(step.id);
         if (linkedTool) {
-          // Skip Task tool calls that have associated subagents
-          // The subagent will be shown separately, so showing the Task call is redundant
+          // Skip spawn tool calls that have associated subagents
+          // The subagent will be shown separately, so showing the spawn call is redundant
           const isTaskWithSubagent =
-            linkedTool.name === 'Task' && taskIdsWithSubagents.has(step.id);
+            isSpawnToolName(linkedTool.name) && taskIdsWithSubagents.has(step.id);
           if (!isTaskWithSubagent) {
             displayItems.push({
               type: 'tool',
@@ -513,9 +514,9 @@ export function buildDisplayItemsFromMessages(
   for (const [toolId, call] of toolCallsById.entries()) {
     const result = toolResultsById.get(toolId);
 
-    // Skip Task tool calls that have associated subagents
-    // The subagent will be shown separately, so showing the Task call is redundant
-    const isTaskWithSubagent = call.name === 'Task' && taskIdsWithSubagents.has(toolId);
+    // Skip spawn tool calls that have associated subagents
+    // The subagent will be shown separately, so showing the spawn call is redundant
+    const isTaskWithSubagent = isSpawnToolName(call.name) && taskIdsWithSubagents.has(toolId);
     if (isTaskWithSubagent) {
       continue;
     }

@@ -10,6 +10,7 @@
  */
 
 import { estimateTokens } from '@shared/utils/tokenFormatting';
+import { isSpawnToolName } from '@shared/utils/toolNames';
 
 import { MAX_MENTIONED_FILE_TOKENS } from '../types/contextInjection';
 
@@ -208,8 +209,10 @@ function aggregateToolOutputs(
     const toolTokenCount = callTokens + resultTokens + skillTokens;
 
     if (toolTokenCount > 0) {
-      // Rename "Task" to "Task (Subagent)" for clarity in the UI
-      const displayName = linkedTool.name === 'Task' ? 'Task (Subagent)' : linkedTool.name;
+      // Label spawn tools consistently as subagent work for clarity in the UI
+      const displayName = isSpawnToolName(linkedTool.name)
+        ? `${linkedTool.name} (Subagent)`
+        : linkedTool.name;
       toolBreakdown.push({
         toolName: displayName,
         tokenCount: toolTokenCount,
