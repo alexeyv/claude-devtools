@@ -53,6 +53,7 @@ import {
 } from './ChunkFactory';
 import { buildGroups as buildConversationGroups } from './ConversationGroupBuilder';
 import { buildSubagentDetail as buildSubagentDetailFn } from './SubagentDetailBuilder';
+import { buildSwimlane } from './SwimlaneBuilder';
 
 import type { SubagentResolver } from '../discovery/SubagentResolver';
 import type { FileSystemProvider } from '../infrastructure/FileSystemProvider';
@@ -186,12 +187,16 @@ export class ChunkBuilder {
     // Calculate overall metrics
     const metrics = calculateMetrics(messages);
 
+    // Project the lane model while raw parent and process messages are intact.
+    const swimlane = buildSwimlane(chunks, subagents, messages);
+
     return {
       session,
       messages,
       chunks,
       processes: subagents,
       metrics,
+      swimlane,
     };
   }
 

@@ -455,6 +455,41 @@ describe('ChunkBuilder', () => {
       expect(detail.chunks.length).toBeGreaterThan(0);
       expect(detail.processes).toEqual([]);
       expect(detail.metrics).toBeDefined();
+      expect(detail.swimlane).toBeDefined();
+    });
+
+    it('projects resolved children even when session metadata says there are no subagents', () => {
+      const start = new Date('2026-08-16T10:00:00.000Z');
+      const end = new Date('2026-08-16T10:00:02.000Z');
+      const session = {
+        id: 'session-with-stale-metadata',
+        projectId: 'project-1',
+        projectPath: '/path/to/project',
+        createdAt: start.getTime(),
+        hasSubagents: false,
+        messageCount: 1,
+      };
+      const child = createSubagent({
+        id: 'resolved-child',
+        startTime: start,
+        endTime: end,
+        messages: [
+          createMessage({
+            uuid: 'child-message',
+            type: 'assistant',
+            isSidechain: true,
+            timestamp: start,
+          }),
+        ],
+      });
+
+      const detail = builder.buildSessionDetail(session, [], [child]);
+      const serializedProjection = JSON.parse(JSON.stringify(detail.swimlane));
+
+      expect(detail.session.hasSubagents).toBe(false);
+      expect(detail.swimlane.childRows).toHaveLength(1);
+      expect(detail.swimlane.childRows[0].activations[0].processId).toBe('resolved-child');
+      expect(JSON.stringify(serializedProjection)).not.toContain('child-message');
     });
   });
 

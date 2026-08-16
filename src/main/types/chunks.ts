@@ -70,6 +70,66 @@ export interface Process {
 }
 
 // =============================================================================
+// Swimlane Projection Types
+// =============================================================================
+
+/** Classification for every interval on the parent lane. */
+export type SwimlaneSegmentType = 'work' | 'HITL-wait' | 'child-wait' | 'idle';
+
+/** A serializable interval on the parent lane. */
+export interface SwimlaneParentSegment {
+  id: string;
+  type: SwimlaneSegmentType;
+  startTime: Date;
+  endTime: Date;
+  durationMs: number;
+  /** Present only for producing assistant request groups. */
+  metrics?: SessionMetrics;
+  /** API request identity, when Claude emitted one for the group. */
+  requestId?: string;
+  /** Existing chunk microscope target for later renderer navigation. */
+  chunkId?: string;
+}
+
+/** A labeled boundary for explicit AskUserQuestion or inferred resume waits. */
+export interface SwimlaneHitlMark {
+  id: string;
+  type: 'ask' | 'answer' | 'resume-start' | 'resume';
+  timestamp: Date;
+  source: 'explicit-ask' | 'inferred-resume';
+  toolUseId?: string;
+}
+
+/** One physical JSONL activation on a logical child row. */
+export interface SwimlaneChildActivation {
+  id: string;
+  processId: string;
+  startTime: Date;
+  endTime: Date;
+  durationMs: number;
+  metrics: SessionMetrics;
+}
+
+/** A logical child, flattened for safe IPC serialization. */
+export interface SwimlaneChildRow {
+  id: string;
+  label: string;
+  parentRowId: string | null;
+  depth: number;
+  activations: SwimlaneChildActivation[];
+}
+
+/** Pure wall-clock projection used by the session swimlane renderer. */
+export interface SwimlaneModel {
+  startTime: Date;
+  endTime: Date;
+  durationMs: number;
+  parentSegments: SwimlaneParentSegment[];
+  hitlMarks: SwimlaneHitlMark[];
+  childRows: SwimlaneChildRow[];
+}
+
+// =============================================================================
 // Chunk Types (for visualization)
 // =============================================================================
 
@@ -401,6 +461,8 @@ export interface SessionDetail {
   processes: Process[];
   /** Aggregated metrics for the entire session */
   metrics: SessionMetrics;
+  /** Serializable wall-clock parent/child lane projection. */
+  swimlane: SwimlaneModel;
   /**
    * Opaque file-state fingerprint (mtimeMs+size) attached by the IPC handler.
    * The renderer treats this as opaque — it's compared by string equality only,
