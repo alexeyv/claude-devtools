@@ -44,6 +44,15 @@ temp/
 .claude/*.local.json
 .claude/agent-memory/*
 .claude/plans/*
+.claude/skills/
+.agents/
+_bmad/config.toml
+_bmad/config.user.toml
+_bmad/_config/
+_bmad/scripts/
+_bmad/render/
+_bmad/core/
+_bmad/bmm/
 claude-dev.tools/*
 
 eslint-fix/
