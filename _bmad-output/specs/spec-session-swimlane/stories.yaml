@@ -1,0 +1,71 @@
+- id: "1"
+  title: Treat Agent as a spawn
+  description: >-
+    CAP-7: isTask is true for Agent as well as Task, and every check that
+    decides a linked Process is a subagent follows isTask. Three parallel
+    Agent children stay three children in the existing microscope.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Start at src/main/utils/toolExtraction.ts. Then displayItemBuilder and
+    ConversationGroupBuilder (name === 'Task' gates). Do not restyle
+    SubagentItem. Do not edit ChunkBuilder except as required for this join.
+    contextTracker label follows isTask.
+
+- id: "2"
+  title: Project the lane model
+  description: >-
+    CAP-2, CAP-3, CAP-4, and CAP-5 data: buildSwimlane(chunks, processes,
+    messages) emits parent intervals, child lanes, nesting, HITL marks, and
+    the four token numbers. Interval classes and HITL inference are in
+    interval-classes.md; brownfield.md names the inputs.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Pure function, new file, testable without Electron. No new parser.
+    Child tokens from Process.metrics, never mainSessionImpact. Silent
+    stretch must never classify as work. Continuation files (parentUuid
+    chain) are one row; nesting is parentTaskId matching a spawn in
+    another process's messages.
+
+- id: "3"
+  title: Add the swimlane toggle
+  description: >-
+    CAP-1: a control in ChatHistory's sticky top-right row replaces the
+    turn list with the swimlane surface and restores it unchanged. Per-tab,
+    off by default, no Settings.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Follow showContextPanel in tabUISlice. Always render the sticky row so
+    the button is visible when Context is hidden. Same --context-btn-*
+    language as Context. Not SearchBar (Cmd+F only). The surface can be
+    empty this story; drawing is story 4.
+
+- id: "4"
+  title: Draw the wall-clock
+  description: >-
+    CAP-2 through CAP-5 visual: one axis, parent work vs silence, one row
+    per child with overlap, HITL marks and wait, bars carrying wall time
+    and the four token numbers. Child-wait looks different from HITL-wait;
+    silent never looks like work.
+  spec_checkpoint: false
+  done_checkpoint: false
+  invoke_dev_with: >-
+    Small view. Reuse existing surface colors and type. No new design
+    system. No ChatHistory restyle. A session with no children is one
+    parent lane plus HITL marks if any.
+
+- id: "5"
+  title: Click through to the microscope
+  description: >-
+    CAP-6: click a parent interval or child bar turns the swimlane off,
+    then calls existing navigation — parent to that turn, child to
+    expandSubagentTrace. No second microscope.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Dismiss first, then existing scroll-to-turn / expandSubagentTraceForTab.
+    No overlay. No stacked pane. Demo against a session that spawned
+    parallel Agents and had a checkpoint/resume (bmad-code-review run 1
+    shape), plus a no-children session.
