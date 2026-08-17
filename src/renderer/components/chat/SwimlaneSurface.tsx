@@ -26,9 +26,12 @@ const TOOLTIP_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 const MIN_HITL_TICK_GAP = 3;
 const SUPPRESSED_DETAIL_LIMIT = 50;
-const MIN_ZOOM_PERCENT = 100;
-const MAX_ZOOM_PERCENT = 400;
-const ZOOM_STEP_PERCENT = 25;
+const MIN_ZOOM_LEVEL = 0;
+const MIN_VIEWPORT_DURATION_MS = 100;
+const TARGET_RULER_TICK_COUNT = 10;
+const MAX_RULER_TICK_COUNT = 20;
+const ESTIMATED_RULER_CHARACTER_WIDTH = 6;
+const RULER_LABEL_GAP = 8;
 const EVIDENCE_TYPES = [
   'assistant-output',
   'model-response',
@@ -371,9 +374,212 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function formatSecondsPerPixel(secondsPerPixel: number): string {
-  if (!Number.isFinite(secondsPerPixel) || secondsPerPixel <= 0) return '0 s/px';
-  return `${secondsPerPixel.toLocaleString(undefined, { maximumSignificantDigits: 3 })} s/px`;
+interface RulerTick {
+  alignment: 'center' | 'end' | 'start';
+  elapsedMs: number;
+  estimatedLabelEndPixel: number;
+  estimatedLabelStartPixel: number;
+  label: string;
+}
+
+interface UnpositionedRulerTick {
+  elapsedMs: number;
+  label: string;
+}
+
+function maximumZoomLevel(durationMs: number): number {
+  if (!Number.isFinite(durationMs) || durationMs <= MIN_VIEWPORT_DURATION_MS) {
+    return MIN_ZOOM_LEVEL;
+  }
+  return Math.max(MIN_ZOOM_LEVEL, Math.floor(Math.log2(durationMs / MIN_VIEWPORT_DURATION_MS)));
+}
+
+function decimalPlacesForStep(stepMs: number): number {
+  if (stepMs < 10) return 3;
+  if (stepMs < 100) return 2;
+  if (stepMs < 1000) return 1;
+  return 0;
+}
+
+function formattedSeconds(milliseconds: number, stepMs: number): string {
+  const precision = decimalPlacesForStep(stepMs);
+  const seconds = milliseconds / 1000;
+  return precision > 0 ? seconds.toFixed(precision) : String(Math.round(seconds));
+}
+
+function formatElapsedTime(elapsedMs: number, stepMs: number): string {
+  const normalizedElapsed = Math.max(0, Math.round(elapsedMs * 1000) / 1000);
+  if (normalizedElapsed < 1000) {
+    const precision = stepMs < 1 ? Math.min(3, Math.max(0, Math.ceil(-Math.log10(stepMs)))) : 0;
+    return `${normalizedElapsed.toFixed(precision)}ms`;
+  }
+
+  const wholeHours = Math.floor(normalizedElapsed / 3_600_000);
+  const afterHours = normalizedElapsed - wholeHours * 3_600_000;
+  const wholeMinutes = Math.floor(afterHours / 60_000);
+  const afterMinutes = afterHours - wholeMinutes * 60_000;
+  const seconds = formattedSeconds(afterMinutes, stepMs);
+
+  if (wholeHours > 0) {
+    if (wholeMinutes === 0 && afterMinutes === 0) return `${wholeHours}h`;
+    if (afterMinutes === 0) return `${wholeHours}h ${wholeMinutes}m`;
+    return `${wholeHours}h ${wholeMinutes}m ${seconds}s`;
+  }
+  if (wholeMinutes > 0) {
+    if (afterMinutes === 0) return `${wholeMinutes}m`;
+    return `${wholeMinutes}m ${seconds}s`;
+  }
+  return `${formattedSeconds(normalizedElapsed, stepMs)}s`;
+}
+
+function powerOfTenNiceStep(targetMs: number): number {
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(Number.MIN_VALUE, targetMs)));
+  const normalized = targetMs / magnitude;
+  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return multiplier * magnitude;
+}
+
+function niceTimeStep(targetMs: number): number {
+  if (!Number.isFinite(targetMs) || targetMs <= 0) return 1;
+  if (targetMs <= 10_000) return powerOfTenNiceStep(targetMs);
+
+  const conventionalSteps = [
+    15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000,
+    10_800_000, 21_600_000, 43_200_000, 86_400_000,
+  ];
+  return conventionalSteps.find((step) => step >= targetMs) ?? powerOfTenNiceStep(targetMs);
+}
+
+function nextNiceTimeStep(stepMs: number): number {
+  return niceTimeStep(stepMs * 1.001);
+}
+
+function ticksForStep(
+  axisDuration: number,
+  visibleStartMs: number,
+  visibleEndMs: number,
+  stepMs: number
+): UnpositionedRulerTick[] {
+  if (axisDuration <= 0) return [{ elapsedMs: 0, label: '0ms' }];
+  const firstIndex = Math.max(0, Math.ceil(visibleStartMs / stepMs - 1e-9));
+  const lastIndex = Math.min(
+    Math.floor(axisDuration / stepMs + 1e-9),
+    Math.floor(visibleEndMs / stepMs + 1e-9)
+  );
+  if (lastIndex < firstIndex) return [];
+  return Array.from({ length: lastIndex - firstIndex + 1 }, (_, offset) => {
+    const elapsedMs = (firstIndex + offset) * stepMs;
+    return { elapsedMs, label: formatElapsedTime(elapsedMs, stepMs) };
+  });
+}
+
+function positionedRulerTick(
+  tick: UnpositionedRulerTick,
+  axisDuration: number,
+  clockWidth: number,
+  visibleStartPixel: number,
+  visibleEndPixel: number
+): RulerTick | undefined {
+  const tickPixel = (tick.elapsedMs / axisDuration) * clockWidth;
+  const labelWidth = tick.label.length * ESTIMATED_RULER_CHARACTER_WIDTH;
+  if (labelWidth > visibleEndPixel - visibleStartPixel) return undefined;
+
+  let alignment: RulerTick['alignment'] = 'center';
+  if (tick.elapsedMs === 0) alignment = 'start';
+  else if (tick.elapsedMs === axisDuration) alignment = 'end';
+  else if (tickPixel - labelWidth / 2 < visibleStartPixel) alignment = 'start';
+  else if (tickPixel + labelWidth / 2 > visibleEndPixel) alignment = 'end';
+
+  const estimatedLabelStartPixel =
+    alignment === 'start'
+      ? tickPixel
+      : alignment === 'end'
+        ? tickPixel - labelWidth
+        : tickPixel - labelWidth / 2;
+  const estimatedLabelEndPixel = estimatedLabelStartPixel + labelWidth;
+  if (
+    estimatedLabelStartPixel < visibleStartPixel - Number.EPSILON ||
+    estimatedLabelEndPixel > visibleEndPixel + Number.EPSILON
+  ) {
+    return undefined;
+  }
+  return { ...tick, alignment, estimatedLabelEndPixel, estimatedLabelStartPixel };
+}
+
+function rulerLabelsDoNotOverlap(ticks: RulerTick[]): boolean {
+  return ticks.every(
+    (tick, index) =>
+      index === 0 ||
+      tick.estimatedLabelStartPixel - ticks[index - 1].estimatedLabelEndPixel >= RULER_LABEL_GAP
+  );
+}
+
+function visibleRulerTicks(
+  axisDuration: number,
+  clockWidth: number,
+  visibleClockWidth: number,
+  scrollLeft: number
+): RulerTick[] {
+  if (axisDuration <= 0 || clockWidth <= 0 || visibleClockWidth <= 0) {
+    return [
+      {
+        alignment: 'start',
+        elapsedMs: 0,
+        estimatedLabelEndPixel: 0,
+        estimatedLabelStartPixel: 0,
+        label: '0ms',
+      },
+    ];
+  }
+  const visibleStartPixel = clamp(scrollLeft, 0, clockWidth);
+  const visibleEndPixel = clamp(scrollLeft + visibleClockWidth, visibleStartPixel, clockWidth);
+  const visibleStartMs = (visibleStartPixel / clockWidth) * axisDuration;
+  const visibleEndMs = clamp(
+    (visibleEndPixel / clockWidth) * axisDuration,
+    visibleStartMs,
+    axisDuration
+  );
+  const visibleDurationMs = Math.max(0, visibleEndMs - visibleStartMs);
+  let stepMs = niceTimeStep(visibleDurationMs / TARGET_RULER_TICK_COUNT);
+  let fallbackTick: RulerTick | undefined;
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const ticks = ticksForStep(axisDuration, visibleStartMs, visibleEndMs, stepMs).flatMap(
+      (tick) => {
+        const positioned = positionedRulerTick(
+          tick,
+          axisDuration,
+          clockWidth,
+          visibleStartPixel,
+          visibleEndPixel
+        );
+        return positioned ? [positioned] : [];
+      }
+    );
+    if (ticks.length > 0) {
+      const visibleCenterPixel = (visibleStartPixel + visibleEndPixel) / 2;
+      fallbackTick = ticks.slice(1).reduce((closest, tick) => {
+        const closestDistance = Math.abs(
+          (closest.elapsedMs / axisDuration) * clockWidth - visibleCenterPixel
+        );
+        const tickDistance = Math.abs(
+          (tick.elapsedMs / axisDuration) * clockWidth - visibleCenterPixel
+        );
+        return tickDistance < closestDistance ? tick : closest;
+      }, ticks[0]);
+    }
+    if (
+      ticks.length > 0 &&
+      ticks.length <= MAX_RULER_TICK_COUNT &&
+      rulerLabelsDoNotOverlap(ticks)
+    ) {
+      return ticks;
+    }
+    const nextStep = nextNiceTimeStep(stepMs);
+    if (nextStep <= stepMs || !Number.isFinite(nextStep)) break;
+    stepMs = nextStep;
+  }
+  return fallbackTick ? [fallbackTick] : [];
 }
 
 function percentage(value: Date | string, axisStart: number, axisDuration: number): number {
@@ -899,6 +1105,7 @@ function swimlaneModelKey(swimlane: unknown): string {
   return `model:${key}`;
 }
 
+/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- The native two-axis scroll viewport must be keyboard focusable. */
 const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
   const axisStart = timestamp(swimlane.startTime);
   const axisEnd = timestamp(swimlane.endTime);
@@ -906,16 +1113,22 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   const rawTooltipId = useId();
   const tooltipId = `swimlane-tooltip-${rawTooltipId.replaceAll(':', '')}`;
   const scaleOutputId = `${tooltipId}-scale`;
+  const rulerDescriptionId = `${tooltipId}-ruler-description`;
   const viewportRef = useRef<HTMLDivElement>(null);
   const pendingCenterRef = useRef<number | null>(null);
+  const rulerPanRef = useRef<{ clientX: number; scrollLeft: number } | null>(null);
   const activationOrderRef = useRef(0);
   const [fitClockWidth, setFitClockWidth] = useState(UNMEASURED_CLOCK_WIDTH);
-  const [zoomPercent, setZoomPercent] = useState(MIN_ZOOM_PERCENT);
+  const [zoomLevel, setZoomLevel] = useState(MIN_ZOOM_LEVEL);
+  const [viewportScrollLeft, setViewportScrollLeft] = useState(0);
   const [hoveredInterval, setHoveredInterval] = useState<ActiveInterval | null>(null);
   const [focusedInterval, setFocusedInterval] = useState<ActiveInterval | null>(null);
-  const clockWidth = Math.max(1, (fitClockWidth * zoomPercent) / 100);
-  const secondsPerPixel = axisDuration / 1000 / clockWidth;
-  const scaleText = formatSecondsPerPixel(secondsPerPixel);
+  const maxZoomLevel = maximumZoomLevel(axisDuration);
+  const boundedZoomLevel = Math.min(zoomLevel, maxZoomLevel);
+  const zoomFactor = 2 ** boundedZoomLevel;
+  const zoomPercent = zoomFactor * 100;
+  const clockWidth = Math.max(1, fitClockWidth * zoomFactor);
+  const rulerTicks = visibleRulerTicks(axisDuration, clockWidth, fitClockWidth, viewportScrollLeft);
   const rowStyle: CSSProperties = {
     ...baseRowStyle,
     gridTemplateColumns: `${LABEL_COLUMN_WIDTH}px ${clockWidth}px`,
@@ -954,8 +1167,8 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         viewportWidth - LABEL_COLUMN_WIDTH - CANVAS_HORIZONTAL_PADDING * 2
       );
       if (fitClockWidth === nextFitClockWidth) return;
-      if (zoomPercent > MIN_ZOOM_PERCENT) {
-        const currentClockWidth = (fitClockWidth * zoomPercent) / 100;
+      if (boundedZoomLevel > MIN_ZOOM_LEVEL) {
+        const currentClockWidth = fitClockWidth * 2 ** boundedZoomLevel;
         pendingCenterRef.current = clamp(
           (viewport.scrollLeft + fitClockWidth / 2) / Math.max(1, currentClockWidth),
           0,
@@ -970,13 +1183,14 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     const observer = new ResizeObserver(measure);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [closeTooltip, fitClockWidth, swimlane, zoomPercent]);
+  }, [boundedZoomLevel, closeTooltip, fitClockWidth, swimlane]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    if (zoomPercent === MIN_ZOOM_PERCENT) {
+    if (boundedZoomLevel === MIN_ZOOM_LEVEL) {
       viewport.scrollLeft = 0;
+      viewport.dispatchEvent(new Event('scroll'));
       pendingCenterRef.current = null;
       return;
     }
@@ -987,19 +1201,16 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       0,
       Math.max(0, clockWidth - fitClockWidth)
     );
+    viewport.dispatchEvent(new Event('scroll'));
     pendingCenterRef.current = null;
-  }, [clockWidth, fitClockWidth, zoomPercent]);
+  }, [boundedZoomLevel, clockWidth, fitClockWidth]);
 
   const setZoom = useCallback(
-    (nextZoomPercent: number): void => {
+    (nextZoomLevel: number): void => {
       const viewport = viewportRef.current;
-      const clampedZoom = clamp(
-        Math.round(nextZoomPercent / ZOOM_STEP_PERCENT) * ZOOM_STEP_PERCENT,
-        MIN_ZOOM_PERCENT,
-        MAX_ZOOM_PERCENT
-      );
-      if (clampedZoom === zoomPercent) return;
-      if (viewport && clampedZoom > MIN_ZOOM_PERCENT) {
+      const clampedZoomLevel = clamp(Math.round(nextZoomLevel), MIN_ZOOM_LEVEL, maxZoomLevel);
+      if (clampedZoomLevel === boundedZoomLevel) return;
+      if (viewport && clampedZoomLevel > MIN_ZOOM_LEVEL) {
         pendingCenterRef.current = clamp(
           (viewport.scrollLeft + fitClockWidth / 2) / clockWidth,
           0,
@@ -1009,10 +1220,51 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         pendingCenterRef.current = null;
       }
       closeTooltip();
-      setZoomPercent(clampedZoom);
+      setZoomLevel(clampedZoomLevel);
     },
-    [clockWidth, closeTooltip, fitClockWidth, zoomPercent]
+    [boundedZoomLevel, clockWidth, closeTooltip, fitClockWidth, maxZoomLevel]
   );
+
+  const beginRulerPan = useCallback(
+    (event: MouseEvent<HTMLDivElement>): void => {
+      const viewport = viewportRef.current;
+      if (!viewport || event.button !== 0 || boundedZoomLevel === MIN_ZOOM_LEVEL) return;
+      event.preventDefault();
+      closeTooltip();
+      rulerPanRef.current = { clientX: event.clientX, scrollLeft: viewport.scrollLeft };
+    },
+    [boundedZoomLevel, closeTooltip]
+  );
+
+  useEffect(() => {
+    const stop = (): void => {
+      rulerPanRef.current = null;
+    };
+    const pan = (event: globalThis.MouseEvent): void => {
+      const viewport = viewportRef.current;
+      const origin = rulerPanRef.current;
+      if (!viewport || !origin) return;
+      if ((event.buttons & 1) === 0) {
+        stop();
+        return;
+      }
+      const nextScrollLeft = clamp(
+        origin.scrollLeft - (event.clientX - origin.clientX),
+        0,
+        Math.max(0, clockWidth - fitClockWidth)
+      );
+      viewport.scrollLeft = nextScrollLeft;
+      setViewportScrollLeft(nextScrollLeft);
+    };
+    window.addEventListener('blur', stop);
+    window.addEventListener('mousemove', pan);
+    window.addEventListener('mouseup', stop);
+    return () => {
+      window.removeEventListener('blur', stop);
+      window.removeEventListener('mousemove', pan);
+      window.removeEventListener('mouseup', stop);
+    };
+  }, [clockWidth, fitClockWidth]);
 
   useEffect(() => {
     if (!activeKey) return;
@@ -1149,8 +1401,8 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
           aria-label="Fit swimlane to width"
           className={zoomButtonClassName}
           data-testid="swimlane-zoom-fit"
-          disabled={zoomPercent === MIN_ZOOM_PERCENT}
-          onClick={() => setZoom(MIN_ZOOM_PERCENT)}
+          disabled={boundedZoomLevel === MIN_ZOOM_LEVEL}
+          onClick={() => setZoom(MIN_ZOOM_LEVEL)}
           style={{ minWidth: '44px' }}
         >
           Fit
@@ -1160,8 +1412,8 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
           aria-label="Zoom out swimlane"
           className={zoomButtonClassName}
           data-testid="swimlane-zoom-out"
-          disabled={zoomPercent === MIN_ZOOM_PERCENT}
-          onClick={() => setZoom(zoomPercent - ZOOM_STEP_PERCENT)}
+          disabled={boundedZoomLevel === MIN_ZOOM_LEVEL}
+          onClick={() => setZoom(boundedZoomLevel - 1)}
           style={{ minWidth: '32px' }}
         >
           −
@@ -1171,39 +1423,49 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
           aria-label="Swimlane zoom percentage"
           className="min-w-24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-emphasis"
           data-testid="swimlane-zoom-range"
-          max={MAX_ZOOM_PERCENT}
-          min={MIN_ZOOM_PERCENT}
+          aria-valuetext={`${zoomPercent}%`}
+          disabled={maxZoomLevel === MIN_ZOOM_LEVEL}
+          max={maxZoomLevel}
+          min={MIN_ZOOM_LEVEL}
           onChange={(event) => setZoom(Number(event.currentTarget.value))}
-          step={ZOOM_STEP_PERCENT}
+          step={1}
           style={{ flex: '1 1 140px' }}
           type="range"
-          value={zoomPercent}
+          value={boundedZoomLevel}
         />
         <button
           type="button"
           aria-label="Zoom in swimlane"
           className={zoomButtonClassName}
           data-testid="swimlane-zoom-in"
-          disabled={zoomPercent === MAX_ZOOM_PERCENT}
-          onClick={() => setZoom(zoomPercent + ZOOM_STEP_PERCENT)}
+          disabled={boundedZoomLevel === maxZoomLevel}
+          onClick={() => setZoom(boundedZoomLevel + 1)}
           style={{ minWidth: '32px' }}
         >
           +
         </button>
         <output
-          data-seconds-per-pixel={secondsPerPixel}
+          aria-atomic="true"
+          aria-live="polite"
           data-testid="swimlane-zoom-output"
           id={scaleOutputId}
           style={{ flex: '0 1 auto', minWidth: 0, whiteSpace: 'nowrap' }}
         >
-          {zoomPercent}% · {scaleText}
+          {zoomPercent}%
         </output>
       </div>
+      <span className="sr-only" id={rulerDescriptionId}>
+        Use the keyboard or native scrollbars to navigate the timeline. Drag the elapsed-time ruler
+        horizontally for precise panning.
+      </span>
       <div
         ref={viewportRef}
+        aria-describedby={rulerDescriptionId}
         aria-label="Swimlane timeline viewport"
         data-testid="swimlane-horizontal-scroll"
+        onScroll={(event) => setViewportScrollLeft(event.currentTarget.scrollLeft)}
         role="region"
+        tabIndex={0}
         style={{
           flex: '1 1 auto',
           minHeight: 0,
@@ -1222,43 +1484,60 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         >
           <div data-testid="swimlane-axis" style={{ ...rowStyle, height: '28px' }}>
             <div style={{ ...labelStyle, color: 'var(--color-text)', fontWeight: 600 }}>
-              Wall clock
+              Elapsed
             </div>
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Dragging is optional; keyboard users scroll the focused viewport. */}
             <div
+              data-testid="swimlane-time-ruler"
+              onMouseDown={beginRulerPan}
               style={{
                 ...clockStyle,
                 borderBottom: '1px solid var(--color-border-emphasis)',
                 color: 'var(--color-text-muted)',
+                cursor: boundedZoomLevel > MIN_ZOOM_LEVEL ? 'grab' : 'default',
                 fontSize: '10px',
                 minHeight: '28px',
+                userSelect: 'none',
               }}
             >
-              <span
-                aria-label="Elapsed start"
-                data-testid="swimlane-axis-start"
-                style={{ left: 0, position: 'absolute', top: '4px' }}
-              >
-                0ms
-              </span>
-              <span
-                aria-label={`Elapsed midpoint ${formatDuration(axisDuration / 2)}`}
-                data-testid="swimlane-axis-midpoint"
-                style={{
-                  left: '50%',
-                  position: 'absolute',
-                  top: '4px',
-                  transform: 'translateX(-50%)',
-                }}
-              >
-                {formatDuration(axisDuration / 2)}
-              </span>
-              <span
-                aria-label={`Elapsed endpoint ${formatDuration(axisDuration)}`}
-                data-testid="swimlane-axis-endpoint"
-                style={{ position: 'absolute', right: 0, top: '4px' }}
-              >
-                {formatDuration(axisDuration)}
-              </span>
+              {rulerTicks.map((tick) => {
+                const tickPercentage = axisDuration > 0 ? (tick.elapsedMs / axisDuration) * 100 : 0;
+                return (
+                  <span
+                    key={tick.elapsedMs}
+                    aria-label={`Elapsed ${tick.label}`}
+                    data-elapsed-ms={tick.elapsedMs}
+                    data-estimated-label-end-pixel={tick.estimatedLabelEndPixel}
+                    data-estimated-label-start-pixel={tick.estimatedLabelStartPixel}
+                    data-label-alignment={tick.alignment}
+                    data-testid="swimlane-ruler-tick"
+                    style={{
+                      borderLeft: '1px solid var(--color-border-emphasis)',
+                      bottom: 0,
+                      left: `${tickPercentage}%`,
+                      position: 'absolute',
+                      top: '16px',
+                    }}
+                  >
+                    <span
+                      style={{
+                        left: 0,
+                        position: 'absolute',
+                        top: '-15px',
+                        transform:
+                          tick.alignment === 'start'
+                            ? 'none'
+                            : tick.alignment === 'end'
+                              ? 'translateX(-100%)'
+                              : 'translateX(-50%)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {tick.label}
+                    </span>
+                  </span>
+                );
+              })}
             </div>
           </div>
 
@@ -1543,6 +1822,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     </section>
   );
 };
+/* eslint-enable jsx-a11y/no-noninteractive-tabindex -- Restore the default accessibility check. */
 
 export const SwimlaneSurface = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
   const normalizedSwimlane = normalizeSwimlaneModel(swimlane);

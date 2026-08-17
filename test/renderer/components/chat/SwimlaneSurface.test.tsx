@@ -242,6 +242,10 @@ async function click(target: HTMLElement): Promise<void> {
   await act(async () => target.click());
 }
 
+function rulerTicks(host: ParentNode): HTMLElement[] {
+  return Array.from(host.querySelectorAll<HTMLElement>('[data-testid="swimlane-ruler-tick"]'));
+}
+
 beforeEach(() => {
   clockWidth = 720;
   tooltipWidth = 260;
@@ -303,14 +307,21 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
     expect(element(host, 'swimlane-parent-row').style.height).toBe('34px');
     expect(element(host, 'swimlane-child-row-child').style.height).toBe('34px');
-    expect(element(host, 'swimlane-axis-midpoint').textContent).toBe('5.0s');
-    expect(element(host, 'swimlane-axis-midpoint').getAttribute('aria-label')).toBe(
-      'Elapsed midpoint 5.0s'
-    );
-    expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('10.0s');
-    expect(element(host, 'swimlane-axis-endpoint').getAttribute('aria-label')).toBe(
-      'Elapsed endpoint 10.0s'
-    );
+    const tickLabels = rulerTicks(host).map((tick) => tick.textContent);
+    expect(tickLabels).toEqual([
+      '0ms',
+      '1s',
+      '2s',
+      '3s',
+      '4s',
+      '5s',
+      '6s',
+      '7s',
+      '8s',
+      '9s',
+      '10s',
+    ]);
+    expect(new Set(tickLabels).size).toBe(tickLabels.length);
 
     const work = element(host, 'swimlane-parent-segment-work');
     const childWait = element(host, 'swimlane-parent-segment-child-wait');
@@ -370,7 +381,7 @@ describe('SwimlaneSurface', () => {
     }
   });
 
-  it('fits the complete clock at 100% with accessible scale feedback and two-axis overflow', async () => {
+  it('fits the complete clock at 100% with accessible percentage feedback and two-axis overflow', async () => {
     const host = await render(mixedModel());
     const viewport = element(host, 'swimlane-horizontal-scroll');
     const canvas = element(host, 'swimlane-clock-canvas');
@@ -380,23 +391,29 @@ describe('SwimlaneSurface', () => {
     const parentLabel = parentRow.firstElementChild as HTMLElement;
 
     expect(range.type).toBe('range');
-    expect(range.min).toBe('100');
-    expect(range.max).toBe('400');
-    expect(range.step).toBe('25');
-    expect(range.value).toBe('100');
-    expect(range.getAttribute('aria-valuetext')).toBeNull();
+    expect(range.min).toBe('0');
+    expect(range.max).toBe('6');
+    expect(range.step).toBe('1');
+    expect(range.value).toBe('0');
+    expect(range.getAttribute('aria-valuetext')).toBe('100%');
     expect(range.getAttribute('aria-describedby')).toBe(output.id);
-    expect(output.getAttribute('aria-live')).toBeNull();
-    expect(output.textContent).toContain('100%');
-    expect(output.textContent).toContain('s/px');
-    expect(Number(output.dataset.secondsPerPixel)).toBeCloseTo(10 / 720);
-    expect(Number.parseFloat(canvas.style.width)).toBe(
-      viewport.getBoundingClientRect().width
-    );
+    expect(output.getAttribute('aria-live')).toBe('polite');
+    expect(output.getAttribute('aria-atomic')).toBe('true');
+    expect(output.textContent).toBe('100%');
+    expect(output.textContent).not.toContain('s/px');
+    expect(output.dataset.secondsPerPixel).toBeUndefined();
+    expect(Number.parseFloat(canvas.style.width)).toBe(viewport.getBoundingClientRect().width);
     expect(viewport.style.overflowX).toBe('auto');
     expect(viewport.style.overflowY).toBe('auto');
     expect(viewport.getAttribute('role')).toBe('region');
     expect(viewport.getAttribute('aria-label')).toBe('Swimlane timeline viewport');
+    const rulerDescriptionId = viewport.getAttribute('aria-describedby');
+    expect(rulerDescriptionId).toBeTruthy();
+    expect(document.getElementById(rulerDescriptionId ?? '')?.textContent).toContain(
+      'Drag the elapsed-time ruler horizontally for precise panning.'
+    );
+    expect(element(host, 'swimlane-time-ruler').getAttribute('aria-label')).toBeNull();
+    expect(viewport.tabIndex).toBe(0);
     expect(parentRow.style.gridTemplateColumns).toBe('184px 720px');
     expect(parentRow.style.height).toBe('34px');
     expect(parentLabel.style.position).toBe('sticky');
@@ -431,7 +448,7 @@ describe('SwimlaneSurface', () => {
     );
   });
 
-  it('steps with both zoom buttons, preserves center while zooming out, and clamps controls', async () => {
+  it('steps through powers of two, preserves center while zooming out, and clamps controls', async () => {
     const host = await render(mixedModel());
     const viewport = element(host, 'swimlane-horizontal-scroll');
     const canvas = element(host, 'swimlane-clock-canvas');
@@ -446,40 +463,250 @@ describe('SwimlaneSurface', () => {
 
     await click(zoomIn);
 
-    expect(range.value).toBe('125');
-    expect(parentRow.style.gridTemplateColumns).toBe('184px 900px');
-    expect(canvas.style.width).toBe('1116px');
-    expect(viewport.scrollLeft).toBe(90);
-    expect(Number(element(host, 'swimlane-zoom-output').dataset.secondsPerPixel)).toBeCloseTo(
-      10 / 900
-    );
+    expect(range.value).toBe('1');
+    expect(range.getAttribute('aria-valuetext')).toBe('200%');
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('200%');
+    expect(parentRow.style.gridTemplateColumns).toBe('184px 1440px');
+    expect(canvas.style.width).toBe('1656px');
+    expect(viewport.scrollLeft).toBe(360);
     expect(interval.style.width).toBe('20%');
-    expect(interval.getBoundingClientRect().width).toBe(180);
+    expect(interval.getBoundingClientRect().width).toBe(288);
     expect(parentRow.style.height).toBe(initialHeight);
     expect(parentLabel.style.fontSize).toBe(initialLabelFontSize);
     expect(parentLabel.style.position).toBe('sticky');
 
     await click(zoomIn);
-    expect(range.value).toBe('150');
-    expect(canvas.style.width).toBe('1296px');
-    expect(viewport.scrollLeft).toBe(180);
+    expect(range.value).toBe('2');
+    expect(range.getAttribute('aria-valuetext')).toBe('400%');
+    expect(canvas.style.width).toBe('3096px');
+    expect(viewport.scrollLeft).toBe(1080);
 
-    viewport.scrollLeft = 270;
+    viewport.scrollLeft = 1270;
     await click(zoomOut);
-    expect(range.value).toBe('125');
-    expect(canvas.style.width).toBe('1116px');
-    expect(viewport.scrollLeft).toBe(165);
+    expect(range.value).toBe('1');
+    expect(canvas.style.width).toBe('1656px');
+    expect(viewport.scrollLeft).toBe(455);
 
     await click(zoomOut);
-    expect(range.value).toBe('100');
+    expect(range.value).toBe('0');
     expect(viewport.scrollLeft).toBe(0);
     expect(zoomOut.disabled).toBe(true);
 
     for (let step = 0; step < 12; step++) await click(zoomIn);
-    expect(range.value).toBe('400');
-    expect(canvas.style.width).toBe('3096px');
+    expect(range.value).toBe('6');
+    expect(range.getAttribute('aria-valuetext')).toBe('6400%');
+    expect(canvas.style.width).toBe('46296px');
     expect(zoomIn.disabled).toBe(true);
     expect((element(host, 'swimlane-zoom-fit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('derives the final zoom level from duration without crossing the 100ms bound', async () => {
+    const model = mixedModel();
+    const host = await render(model);
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+
+    expect(Number(range.max)).toBe(6);
+    expect(model.durationMs / 2 ** Number(range.max)).toBe(156.25);
+
+    for (const [durationMs, expectedMax] of [
+      [0, 0],
+      [100, 0],
+      [199, 0],
+      [200, 1],
+      [399, 1],
+      [400, 2],
+    ]) {
+      const boundedModel = mixedModel();
+      boundedModel.endTime = new Date(BASE_TIME + durationMs);
+      boundedModel.durationMs = durationMs;
+      boundedModel.parentSegments = [];
+      boundedModel.hitlMarks = [];
+      boundedModel.childRows = [];
+      await rerender(boundedModel);
+      const boundedRange = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+      expect(Number(boundedRange.max)).toBe(expectedMax);
+      if (expectedMax > 0) {
+        const visibleDuration = durationMs / 2 ** expectedMax;
+        expect(visibleDuration).toBeGreaterThanOrEqual(100);
+        expect(visibleDuration).toBeLessThan(200);
+      } else {
+        expect(boundedRange.disabled).toBe(true);
+      }
+    }
+  });
+
+  it('uses globally anchored nice ticks and mounts only non-overlapping visible labels', async () => {
+    const longModel = mixedModel();
+    longModel.endTime = at(900);
+    longModel.durationMs = 900_000;
+    longModel.parentSegments = [];
+    longModel.hitlMarks = [];
+    longModel.childRows = [];
+    const host = await render(longModel);
+
+    expect(rulerTicks(host).map((tick) => tick.textContent)).toEqual([
+      '0ms',
+      '2m',
+      '4m',
+      '6m',
+      '8m',
+      '10m',
+      '12m',
+      '14m',
+    ]);
+
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    await setRangeValue(range, Number(range.max));
+    viewport.scrollLeft = 4_000_000;
+    await act(async () => viewport.dispatchEvent(new Event('scroll')));
+
+    const ticks = rulerTicks(host);
+    const elapsedValues = ticks.map((tick) => Number(tick.dataset.elapsedMs));
+    const clock = Number(
+      element(host, 'swimlane-parent-row').style.gridTemplateColumns.split(' ')[1].replace('px', '')
+    );
+    const visibleStart = (viewport.scrollLeft / clock) * longModel.durationMs;
+    const visibleEnd = ((viewport.scrollLeft + clockWidth) / clock) * longModel.durationMs;
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(ticks.length).toBeLessThanOrEqual(20);
+    expect(elapsedValues.every((value) => value >= visibleStart && value <= visibleEnd)).toBe(true);
+    expect(elapsedValues.every((value) => value % 20 === 0)).toBe(true);
+    expect(ticks.every((tick) => tick.textContent !== '0ms')).toBe(true);
+    expect(new Set(ticks.map((tick) => tick.textContent)).size).toBe(ticks.length);
+
+    viewportClientWidthOverride = 336;
+    await triggerResizeObservers();
+    expect(rulerTicks(host).length).toBeLessThanOrEqual(ticks.length);
+  });
+
+  it('coarsens ticks at an exact narrow width and keeps estimated labels inside the clock', async () => {
+    viewportClientWidthOverride = 336;
+    const host = await render(mixedModel());
+    const ticks = rulerTicks(host);
+
+    expect(ticks.map((tick) => tick.textContent)).toEqual(['0ms', '5s', '10s']);
+    expect(
+      ticks.every(
+        (tick) =>
+          Number(tick.dataset.estimatedLabelStartPixel) >= 0 &&
+          Number(tick.dataset.estimatedLabelEndPixel) <= 120
+      )
+    ).toBe(true);
+    for (let index = 1; index < ticks.length; index++) {
+      expect(
+        Number(ticks[index].dataset.estimatedLabelStartPixel) -
+          Number(ticks[index - 1].dataset.estimatedLabelEndPixel)
+      ).toBeGreaterThanOrEqual(8);
+    }
+  });
+
+  it('retains a globally anchored tick in a positive-duration extreme-narrow panned viewport', async () => {
+    viewportClientWidthOverride = 256;
+    const host = await render(mixedModel());
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    await setRangeValue(range, Number(range.max));
+    const renderedClockWidth = 40 * 2 ** Number(range.max);
+    viewport.scrollLeft = (5010 / 10_000) * renderedClockWidth;
+    await act(async () => viewport.dispatchEvent(new Event('scroll')));
+
+    const ticks = rulerTicks(host);
+    expect(ticks.map((tick) => Number(tick.dataset.elapsedMs))).toEqual([5100]);
+    expect(Number(ticks[0].dataset.elapsedMs) % 100).toBe(0);
+    expect(Number(ticks[0].dataset.estimatedLabelStartPixel)).toBeGreaterThanOrEqual(
+      viewport.scrollLeft
+    );
+    expect(Number(ticks[0].dataset.estimatedLabelEndPixel)).toBeLessThanOrEqual(
+      viewport.scrollLeft + 40
+    );
+  });
+
+  it('uses readable millisecond ticks at maximum detail', async () => {
+    const millisecondModel = mixedModel();
+    millisecondModel.endTime = new Date(BASE_TIME + 400);
+    millisecondModel.durationMs = 400;
+    millisecondModel.parentSegments = [];
+    millisecondModel.hitlMarks = [];
+    millisecondModel.childRows = [];
+    const host = await render(millisecondModel);
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+
+    await setRangeValue(range, Number(range.max));
+
+    expect(range.getAttribute('aria-valuetext')).toBe('400%');
+    expect(rulerTicks(host).map((tick) => tick.textContent)).toEqual([
+      '150ms',
+      '160ms',
+      '170ms',
+      '180ms',
+      '190ms',
+      '200ms',
+      '210ms',
+      '220ms',
+      '230ms',
+      '240ms',
+      '250ms',
+    ]);
+  });
+
+  it('formats exact hours and later exact-minute ticks uniquely', async () => {
+    const hourModel = mixedModel();
+    hourModel.endTime = at(4 * 60 * 60);
+    hourModel.durationMs = 4 * 60 * 60 * 1000;
+    hourModel.parentSegments = [];
+    hourModel.hitlMarks = [];
+    hourModel.childRows = [];
+    const host = await render(hourModel);
+    const labels = rulerTicks(host).map((tick) => tick.textContent);
+
+    expect(labels).toEqual(['0ms', '30m', '1h', '1h 30m', '2h', '2h 30m', '3h', '3h 30m', '4h']);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('keeps native coarse scrolling and pans the long-run ruler one-to-one', async () => {
+    const longModel = mixedModel();
+    longModel.endTime = at(900);
+    longModel.durationMs = 900_000;
+    longModel.parentSegments = [];
+    longModel.hitlMarks = [];
+    longModel.childRows = [];
+    const host = await render(longModel);
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const ruler = element(host, 'swimlane-time-ruler');
+
+    expect(viewport.style.overflowX).toBe('auto');
+    expect(range.max).toBe('13');
+    await setRangeValue(range, 13);
+    const initialScrollLeft = viewport.scrollLeft;
+    await act(async () => {
+      ruler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 300 }));
+      window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX: 250 }));
+      window.dispatchEvent(new MouseEvent('mouseup'));
+    });
+
+    expect(viewport.scrollLeft).toBe(initialScrollLeft + 50);
+    const stoppedScrollLeft = viewport.scrollLeft;
+    await act(async () =>
+      window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX: 200 }))
+    );
+    expect(viewport.scrollLeft).toBe(stoppedScrollLeft);
+
+    await act(async () => {
+      ruler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 300 }));
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX: 200 }));
+    });
+    expect(viewport.scrollLeft).toBe(stoppedScrollLeft);
+
+    await act(async () => {
+      ruler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 300 }));
+      window.dispatchEvent(new MouseEvent('mousemove', { buttons: 0, clientX: 250 }));
+      window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX: 200 }));
+    });
+    expect(viewport.scrollLeft).toBe(stoppedScrollLeft);
+    expect(rulerTicks(host).length).toBeLessThanOrEqual(20);
   });
 
   it('returns to Fit after panning, removes stale scroll, and dismisses active details', async () => {
@@ -488,13 +715,13 @@ describe('SwimlaneSurface', () => {
     const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
     const work = element(host, 'swimlane-parent-segment-work');
 
-    await setRangeValue(range, 200);
+    await setRangeValue(range, 1);
     viewport.scrollLeft = 500;
     await mouseOver(work);
     expect(document.querySelector('[role="tooltip"]')).not.toBeNull();
     await act(async () => element(host, 'swimlane-zoom-fit').click());
 
-    expect(range.value).toBe('100');
+    expect(range.value).toBe('0');
     expect(viewport.scrollLeft).toBe(0);
     expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
@@ -505,13 +732,13 @@ describe('SwimlaneSurface', () => {
     const host = await render(model);
     const initialViewport = element(host, 'swimlane-horizontal-scroll');
 
-    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 200);
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 1);
     initialViewport.scrollLeft = 500;
     await rerender({ ...model, parentSegments: [...model.parentSegments] });
 
     const replacementViewport = element(host, 'swimlane-horizontal-scroll');
     expect(replacementViewport).not.toBe(initialViewport);
-    expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).value).toBe('100');
+    expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).value).toBe('0');
     expect(replacementViewport.scrollLeft).toBe(0);
     expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
   });
@@ -521,9 +748,8 @@ describe('SwimlaneSurface', () => {
     const viewport = element(host, 'swimlane-horizontal-scroll');
     const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
 
-    await setRangeValue(range, 200);
+    await setRangeValue(range, 1);
     expect(viewport.scrollLeft).toBe(360);
-    const oldScale = Number(element(host, 'swimlane-zoom-output').dataset.secondsPerPixel);
 
     clockWidth = 1000;
     await triggerResizeObservers();
@@ -531,18 +757,16 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-parent-row').style.gridTemplateColumns).toBe('184px 2000px');
     expect(element(host, 'swimlane-clock-canvas').style.width).toBe('2216px');
     expect(viewport.scrollLeft).toBe(500);
-    expect(Number(element(host, 'swimlane-zoom-output').dataset.secondsPerPixel)).toBeLessThan(
-      oldScale
-    );
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('200%');
 
-    await setRangeValue(range, 100);
+    await setRangeValue(range, 0);
     clockWidth = 480;
     await triggerResizeObservers();
     expect(viewport.scrollLeft).toBe(0);
     expect(element(host, 'swimlane-clock-canvas').style.width).toBe('696px');
   });
 
-  it('keeps zero-duration scale output stable and reveals real sub-pixel detail when zoomed', async () => {
+  it('keeps zero-duration ruler state stable and reveals real sub-pixel detail when zoomed', async () => {
     const pointModel = mixedModel();
     pointModel.endTime = pointModel.startTime;
     pointModel.durationMs = 0;
@@ -552,10 +776,18 @@ describe('SwimlaneSurface', () => {
     const host = await render(pointModel);
 
     const zeroScaleOutput = element(host, 'swimlane-zoom-output');
-    expect(zeroScaleOutput.textContent).toContain('100%');
-    expect(zeroScaleOutput.textContent).toContain('0 s/px');
+    expect(zeroScaleOutput.textContent).toBe('100%');
     expect(zeroScaleOutput.textContent).not.toMatch(/NaN|Infinity/);
-    expect(Number(zeroScaleOutput.dataset.secondsPerPixel)).toBe(0);
+    expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).disabled).toBe(true);
+    expect(rulerTicks(host)).toHaveLength(1);
+    expect(rulerTicks(host)[0].textContent).toBe('0ms');
+
+    viewportClientWidthOverride = 217;
+    await triggerResizeObservers();
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('217px');
+    expect(rulerTicks(host).map((tick) => tick.textContent)).toEqual(['0ms']);
+    viewportClientWidthOverride = undefined;
+    await triggerResizeObservers();
 
     const denseModel = mixedModel();
     denseModel.parentSegments = [
@@ -587,10 +819,12 @@ describe('SwimlaneSurface', () => {
     ];
     denseModel.hitlMarks = [];
     await rerender(denseModel);
-    expect(host.querySelector('[data-testid="swimlane-parent-segment-five-millisecond-detail"]'))
-      .toBeNull();
-    expect(host.querySelector('[data-testid="swimlane-activation-five-millisecond-child-detail"]'))
-      .toBeNull();
+    expect(
+      host.querySelector('[data-testid="swimlane-parent-segment-five-millisecond-detail"]')
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="swimlane-activation-five-millisecond-child-detail"]')
+    ).toBeNull();
     expect(element(host, 'swimlane-suppressed-activity').dataset.suppressedCount).toBe('2');
     expect(
       element(host, 'swimlane-child-row-dense-child').lastElementChild?.getAttribute(
@@ -598,14 +832,14 @@ describe('SwimlaneSurface', () => {
       )
     ).toBe('720');
 
-    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 400);
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 6);
     expect(element(host, 'swimlane-parent-segment-five-millisecond-detail')).toBeTruthy();
     expect(element(host, 'swimlane-activation-five-millisecond-child-detail')).toBeTruthy();
     expect(
       element(host, 'swimlane-child-row-dense-child').lastElementChild?.getAttribute(
         'data-clock-width'
       )
-    ).toBe('2880');
+    ).toBe('46080');
     expect(host.querySelector('[data-testid="swimlane-suppressed-activity"]')).toBeNull();
   });
 
@@ -722,11 +956,11 @@ describe('SwimlaneSurface', () => {
 
   it('fails closed for primitive models and missing or invalid axis bounds', async () => {
     const host = await render(null as unknown as SwimlaneModel);
-    expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('0ms');
+    expect(rulerTicks(host).map((tick) => tick.textContent)).toEqual(['0ms']);
 
     for (const primitive of [42, 'stale', false]) {
       await rerender(primitive as unknown as SwimlaneModel);
-      expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('0ms');
+      expect(rulerTicks(host).map((tick) => tick.textContent)).toEqual(['0ms']);
     }
 
     for (const partialAxis of [
@@ -741,8 +975,7 @@ describe('SwimlaneSurface', () => {
         ...partialAxis,
         parentSegments: [],
       } as unknown as SwimlaneModel);
-      expect(element(host, 'swimlane-axis-midpoint').textContent).toBe('0ms');
-      expect(element(host, 'swimlane-axis-endpoint').textContent).toBe('0ms');
+      expect(rulerTicks(host).map((tick) => tick.textContent)).toEqual(['0ms']);
     }
   });
 
