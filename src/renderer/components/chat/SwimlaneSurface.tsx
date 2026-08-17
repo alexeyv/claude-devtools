@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { formatDuration } from '@renderer/utils/formatters';
@@ -202,6 +202,8 @@ function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
   const markIds = new Set<string>();
   const rowIds = new Set<string>();
   const activationIds = new Set<string>();
+  const childEvidenceIds = new Set<string>();
+  const childSegmentIds = new Set<string>();
   const parentSegments = (Array.isArray(model.parentSegments) ? model.parentSegments : []).flatMap(
     (value, index): SwimlaneParentSegment[] => {
       const candidate = runtimeRecord(value);
@@ -324,6 +326,94 @@ function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
           if (!interval) return [];
           const metrics = runtimeMetrics(activation.metrics);
           const target = runtimeTarget(activation.target);
+          const activationStart = interval.startTime.getTime();
+          const activationEnd = interval.endTime.getTime();
+          const childEvidenceIdMap = new Map<string, string>();
+          const childEvidence = Array.isArray(activation.evidence)
+            ? activation.evidence.flatMap((evidenceValue, evidenceIndex) => {
+                const childEvidenceCandidate = runtimeRecord(evidenceValue);
+                if (!childEvidenceCandidate || !isEvidenceType(childEvidenceCandidate.type)) {
+                  return [];
+                }
+                const evidenceInterval = clippedInterval(
+                  childEvidenceCandidate,
+                  activationStart,
+                  activationEnd
+                );
+                if (!evidenceInterval) return [];
+                const evidenceMetrics = runtimeMetrics(childEvidenceCandidate.metrics);
+                const rawEvidenceId = runtimeNonblankString(childEvidenceCandidate.id);
+                const normalizedEvidenceId = uniqueRuntimeId(
+                  rawEvidenceId,
+                  `child-evidence-${rowIndex}-${activationIndex}-${evidenceIndex}`,
+                  childEvidenceIds
+                );
+                if (rawEvidenceId && !childEvidenceIdMap.has(rawEvidenceId)) {
+                  childEvidenceIdMap.set(rawEvidenceId, normalizedEvidenceId);
+                }
+                return [
+                  {
+                    id: normalizedEvidenceId,
+                    type: childEvidenceCandidate.type,
+                    ...evidenceInterval,
+                    ...(typeof childEvidenceCandidate.requestId === 'string'
+                      ? { requestId: childEvidenceCandidate.requestId }
+                      : {}),
+                    ...(typeof childEvidenceCandidate.toolUseId === 'string'
+                      ? { toolUseId: childEvidenceCandidate.toolUseId }
+                      : {}),
+                    ...(typeof childEvidenceCandidate.processId === 'string'
+                      ? { processId: childEvidenceCandidate.processId }
+                      : {}),
+                    ...(typeof childEvidenceCandidate.startMessageId === 'string'
+                      ? { startMessageId: childEvidenceCandidate.startMessageId }
+                      : {}),
+                    ...(typeof childEvidenceCandidate.endMessageId === 'string'
+                      ? { endMessageId: childEvidenceCandidate.endMessageId }
+                      : {}),
+                    ...(typeof childEvidenceCandidate.label === 'string'
+                      ? { label: childEvidenceCandidate.label }
+                      : {}),
+                    ...(evidenceMetrics ? { metrics: evidenceMetrics } : {}),
+                    ...(target ? { target } : {}),
+                  },
+                ];
+              })
+            : undefined;
+          const childSegments = Array.isArray(activation.segments)
+            ? activation.segments.flatMap((segmentValue, segmentIndex) => {
+                const segment = runtimeRecord(segmentValue);
+                if (!segment || !isParentType(segment.type)) return [];
+                const segmentInterval = clippedInterval(
+                  segment,
+                  activationStart,
+                  activationEnd
+                );
+                if (!segmentInterval) return [];
+                const segmentMetrics = runtimeMetrics(segment.metrics);
+                const rawEvidenceId = runtimeNonblankString(segment.evidenceId);
+                const evidenceId = rawEvidenceId
+                  ? (childEvidenceIdMap.get(rawEvidenceId) ?? rawEvidenceId)
+                  : undefined;
+                return [
+                  {
+                    id: uniqueRuntimeId(
+                      segment.id,
+                      `child-segment-${rowIndex}-${activationIndex}-${segmentIndex}`,
+                      childSegmentIds
+                    ),
+                    type: segment.type,
+                    ...segmentInterval,
+                    ...(evidenceId ? { evidenceId } : {}),
+                    ...(segmentMetrics ? { metrics: segmentMetrics } : {}),
+                    ...(runtimeNonblankString(segment.requestId)
+                      ? { requestId: runtimeNonblankString(segment.requestId) }
+                      : {}),
+                    ...(target ? { target } : {}),
+                  },
+                ];
+              })
+            : undefined;
           return [
             {
               id: uniqueRuntimeId(
@@ -336,6 +426,8 @@ function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
                 `process-${rowIndex}-${activationIndex}`,
               ...interval,
               ...(metrics ? { metrics } : {}),
+              ...(childEvidence ? { evidence: childEvidence } : {}),
+              ...(childSegments && childSegments.length > 0 ? { segments: childSegments } : {}),
               ...(target ? { target } : {}),
             },
           ];
@@ -701,7 +793,10 @@ function segmentLabel(type: SwimlaneParentSegment['type']): string {
   }
 }
 
-function intervalIdentity(namespace: 'activation' | 'parent', ...parts: string[]): string {
+function intervalIdentity(
+  namespace: 'activation' | 'child-segment' | 'parent',
+  ...parts: string[]
+): string {
   const encodedParts = parts.map((part) => [part.length, part].join(':')).join('|');
   return `${namespace}:${encodedParts}`;
 }
@@ -1337,29 +1432,106 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       details: { durationMs: segment.durationMs, metrics: segment.metrics },
       target: segment.target,
     }));
-  const suppressedActivations: SuppressedInterval[] = swimlane.childRows.flatMap((row) =>
-    row.activations
-      .filter(
-        (activation) =>
+  const suppressedChildIntervals: SuppressedInterval[] = swimlane.childRows.flatMap((row) =>
+    row.activations.flatMap((activation) => {
+      if (!activation.segments) {
+        return intervalPixelWidth(
+          activation.startTime,
+          activation.endTime,
+          axisStart,
+          axisDuration,
+          clockWidth
+        ) < MIN_MEANINGFUL_INTERVAL_WIDTH
+          ? [
+              {
+                id: `activation:${row.id}:${activation.id}`,
+                identity: `${row.label} activation`,
+                details: { durationMs: activation.durationMs, metrics: activation.metrics },
+                target: activation.target,
+              },
+            ]
+          : [];
+      }
+      const visibleSegments = activation.segments.filter(
+        (segment) =>
           intervalPixelWidth(
-            activation.startTime,
-            activation.endTime,
+            segment.startTime,
+            segment.endTime,
             axisStart,
             axisDuration,
             clockWidth
-          ) < MIN_MEANINGFUL_INTERVAL_WIDTH
-      )
-      .map((activation) => ({
-        id: `activation:${row.id}:${activation.id}`,
-        identity: `${row.label} activation`,
-        details: { durationMs: activation.durationMs, metrics: activation.metrics },
-        target: activation.target,
-      }))
+          ) >= MIN_MEANINGFUL_INTERVAL_WIDTH
+      );
+      const visibleChildEvidenceIds = new Set(
+        visibleSegments
+          .map((segment) => segment.evidenceId)
+          .filter((id): id is string => id !== undefined)
+      );
+      const activationEvidenceIds = new Set(
+        (activation.evidence ?? []).map((evidence) => evidence.id)
+      );
+      const activationIsSubpixel =
+        intervalPixelWidth(
+          activation.startTime,
+          activation.endTime,
+          axisStart,
+          axisDuration,
+          clockWidth
+        ) < MIN_MEANINGFUL_INTERVAL_WIDTH;
+      const hasOnlyUnattributedOrNoEvidenceSegments =
+        activationEvidenceIds.size === 0 &&
+        activation.segments.every(
+          (segment) => segment.type === 'unattributed' || !segment.evidenceId
+        );
+      if (activationIsSubpixel && hasOnlyUnattributedOrNoEvidenceSegments) {
+        return [
+          {
+            id: `activation:${row.id}:${activation.id}`,
+            identity: `${row.label} activation`,
+            details: { durationMs: activation.durationMs, metrics: activation.metrics },
+            target: activation.target,
+          },
+        ];
+      }
+      const hiddenEvidence = (activation.evidence ?? [])
+        .filter((evidence) => !visibleChildEvidenceIds.has(evidence.id))
+        .map((evidence) => {
+          const causalIdentity =
+            evidence.label ?? evidence.toolUseId ?? evidence.requestId ?? evidence.processId;
+          const identitySuffix = causalIdentity ? ` (${causalIdentity})` : '';
+          return {
+            id: `child-evidence:${row.id}:${activation.id}:${evidence.id}`,
+            identity: `${row.label} ${segmentLabel(evidence.type)}${identitySuffix}`,
+            details: { durationMs: evidence.durationMs, metrics: evidence.metrics },
+            target: activation.target,
+          };
+        });
+      const hiddenUnlinkedSegments = activation.segments
+        .filter(
+          (segment) =>
+            segment.type !== 'unattributed' &&
+            (!segment.evidenceId || !activationEvidenceIds.has(segment.evidenceId)) &&
+            intervalPixelWidth(
+              segment.startTime,
+              segment.endTime,
+              axisStart,
+              axisDuration,
+              clockWidth
+            ) < MIN_MEANINGFUL_INTERVAL_WIDTH
+        )
+        .map((segment) => ({
+          id: `child-segment:${row.id}:${activation.id}:${segment.id}`,
+          identity: `${row.label} ${segmentLabel(segment.type)}`,
+          details: { durationMs: segment.durationMs, metrics: segment.metrics },
+          target: activation.target,
+        }));
+      return [...hiddenEvidence, ...hiddenUnlinkedSegments];
+    })
   );
   const suppressedIntervals = [
     ...suppressedEvidence,
     ...suppressedLegacySegments,
-    ...suppressedActivations,
+    ...suppressedChildIntervals,
   ];
   const suppressedCount = suppressedIntervals.length;
   const displayedSuppressedIntervals = suppressedIntervals.slice(0, SUPPRESSED_DETAIL_LIMIT);
@@ -1704,6 +1876,99 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                         metrics: activation.metrics,
                       };
                       const identity = `${row.label} activation`;
+                      if (activation.segments) {
+                        const activationEvidenceById = new Map(
+                          (activation.evidence ?? []).map((evidence) => [evidence.id, evidence])
+                        );
+                        return (
+                          <Fragment key={intervalKey}>
+                            <div
+                              aria-hidden="true"
+                              data-classified="true"
+                              data-testid={`swimlane-activation-${activation.id}`}
+                              style={{
+                                ...intervalBaseStyle,
+                                ...intervalStyle(
+                                  activation.startTime,
+                                  activation.endTime,
+                                  axisStart,
+                                  axisDuration
+                                ),
+                                background: 'transparent',
+                                borderColor: 'var(--card-separator)',
+                                borderStyle: 'solid',
+                                borderWidth: '1px',
+                                pointerEvents: 'none',
+                                zIndex: 3,
+                              }}
+                            />
+                            {activation.segments
+                              .filter(
+                                (segment) =>
+                                  intervalPixelWidth(
+                                    segment.startTime,
+                                    segment.endTime,
+                                    axisStart,
+                                    axisDuration,
+                                    clockWidth
+                                  ) >= MIN_MEANINGFUL_INTERVAL_WIDTH
+                              )
+                              .map((segment) => {
+                                const segmentKey = intervalIdentity(
+                                  'child-segment',
+                                  row.id,
+                                  activation.id,
+                                  segment.id
+                                );
+                                const segmentIdentity = `${row.label} ${segmentLabel(segment.type)}`;
+                                return (
+                                  <SwimlaneInterval
+                                    key={segmentKey}
+                                    active={activeKey === segmentKey}
+                                    ariaLabel={segmentIdentity}
+                                    details={{
+                                      durationMs: segment.durationMs,
+                                      metrics:
+                                        segment.metrics ??
+                                        (segment.evidenceId
+                                          ? activationEvidenceById.get(segment.evidenceId)?.metrics
+                                          : undefined),
+                                    }}
+                                    fallbackWidth={intervalPixelWidth(
+                                      segment.startTime,
+                                      segment.endTime,
+                                      axisStart,
+                                      axisDuration,
+                                      clockWidth
+                                    )}
+                                    inlineLabel={formatDuration(segment.durationMs)}
+                                    intervalKey={segmentKey}
+                                    onBlur={interactionProps.onBlur}
+                                    onFocus={interactionProps.onFocus}
+                                    onMouseEnter={interactionProps.onMouseEnter}
+                                    onMouseLeave={interactionProps.onMouseLeave}
+                                    dataSegmentType={segment.type}
+                                    testId={`swimlane-child-segment-${activation.id}-${segment.id}`}
+                                    target={activation.target}
+                                    onTarget={onTarget}
+                                    tooltipId={tooltipId}
+                                    style={{
+                                      ...intervalBaseStyle,
+                                      ...intervalStyle(
+                                        segment.startTime,
+                                        segment.endTime,
+                                        axisStart,
+                                        axisDuration
+                                      ),
+                                      ...segmentTreatment(segment),
+                                      zIndex: 2,
+                                    }}
+                                  />
+                                );
+                              })}
+                          </Fragment>
+                        );
+                      }
                       return (
                         <SwimlaneInterval
                           key={intervalKey}

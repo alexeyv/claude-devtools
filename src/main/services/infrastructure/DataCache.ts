@@ -34,7 +34,7 @@ export class DataCache {
   private ttl: number; // Time-to-live in milliseconds
   private enabled: boolean; // Whether caching is enabled
   private disposed = false; // Flag to prevent reuse after disposal
-  private static readonly CURRENT_VERSION = 3; // Increment when cache structure changes
+  private static readonly CURRENT_VERSION = 4; // Increment when cache structure changes
 
   constructor(maxSize: number = 50, ttlMinutes: number = 10, enabled: boolean = true) {
     this.cache = new Map();

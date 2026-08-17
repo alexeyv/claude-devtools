@@ -1127,6 +1127,281 @@ describe('buildSwimlane', () => {
     ).toBe(true);
   });
 
+  it('classifies each physical child activation from its own messages and owns request metrics once', () => {
+    const read = { id: 'child-read', name: 'Read', input: {}, isTask: false };
+    const childMetrics = metrics({ inputTokens: 20, outputTokens: 10, totalTokens: 30 });
+    const child = process('classified-child', 1, 5, {
+      metrics: childMetrics,
+      mainSessionImpact: { callTokens: 999, resultTokens: 999, totalTokens: 1998 },
+      messages: [
+        message('child-prompt', 1, {
+          type: 'user',
+          content: 'work',
+          isSidechain: true,
+        }),
+        message('child-output-start', 2, {
+          parentUuid: 'child-prompt',
+          isSidechain: true,
+          requestId: 'child-request',
+          usage: { input_tokens: 8, output_tokens: 2 },
+        }),
+        message('child-output-tool', 3, {
+          parentUuid: 'child-prompt',
+          isSidechain: true,
+          requestId: 'child-request',
+          usage: { input_tokens: 8, output_tokens: 4 },
+          toolCalls: [read],
+        }),
+        message('child-tool-result', 4, {
+          parentUuid: 'child-output-tool',
+          type: 'user',
+          isMeta: true,
+          isSidechain: true,
+          sourceToolUseID: read.id,
+        }),
+      ],
+    });
+
+    const activation = buildSwimlane([], [child], []).childRows[0].activations[0];
+
+    expect(activation.metrics).toEqual(childMetrics);
+    expect(activation.evidence?.map((evidence) => evidence.type)).toEqual([
+      'model-response',
+      'assistant-output',
+      'tool-execution',
+    ]);
+    expect(activation.segments?.map((segment) => segment.type)).toEqual([
+      'model-response',
+      'assistant-output',
+      'tool-execution',
+      'unattributed',
+    ]);
+    expect(
+      activation.segments?.filter(
+        (segment) => segment.type === 'assistant-output' && segment.metrics
+      )
+    ).toHaveLength(1);
+    expect(
+      activation.segments?.find((segment) => segment.type === 'assistant-output')?.metrics
+    ).toMatchObject({ inputTokens: 8, outputTokens: 4 });
+    expect(JSON.stringify(activation)).not.toContain('1998');
+    expect(activation.evidence?.some((evidence) => evidence.type === 'human-wait')).toBe(false);
+  });
+
+  it('attributes nested child wait only to the activation that spawned it', () => {
+    const rootSpawn = spawnCall('owned-root-spawn');
+    const nestedSpawn = spawnCall('owned-nested-spawn');
+    const rootMessages = [
+      message('owned-root-call', 0, { toolCalls: [rootSpawn] }),
+      message('owned-root-result', 10, {
+        type: 'user',
+        isMeta: true,
+        sourceToolUseID: rootSpawn.id,
+        toolUseResult: { agentId: 'wait-owner' },
+      }),
+    ];
+    const owner = process('wait-owner', 2, 8, {
+      parentTaskId: rootSpawn.id,
+      messages: [
+        message('owned-child-call', 3, {
+          isSidechain: true,
+          toolCalls: [nestedSpawn],
+        }),
+        message('owned-child-result', 7, {
+          type: 'user',
+          isMeta: true,
+          isSidechain: true,
+          sourceToolUseID: nestedSpawn.id,
+          toolUseResult: { agentId: 'wait-nested' },
+        }),
+      ],
+    });
+    const nested = process('wait-nested', 4, 6, {
+      parentTaskId: nestedSpawn.id,
+      messages: [message('nested-work', 5, { isSidechain: true })],
+    });
+
+    const model = buildSwimlane([], [owner, nested], rootMessages);
+    const ownerActivation = model.childRows.find((row) => row.id === owner.id)?.activations[0];
+
+    expect(
+      model.evidence.filter((evidence) => evidence.type === 'child-wait').map((evidence) => ({
+        processId: evidence.processId,
+        startTime: evidence.startTime,
+        endTime: evidence.endTime,
+      }))
+    ).toEqual([{ processId: owner.id, startTime: at(2), endTime: at(8) }]);
+    expect(
+      ownerActivation?.evidence
+        ?.filter((evidence) => evidence.type === 'child-wait')
+        .map((evidence) => ({
+          processId: evidence.processId,
+          startTime: evidence.startTime,
+          endTime: evidence.endTime,
+      }))
+    ).toEqual([{ processId: nested.id, startTime: at(4), endTime: at(6) }]);
+    const nestedWaitEvidence = ownerActivation?.evidence?.find(
+      (evidence) => evidence.type === 'child-wait'
+    );
+    expect(
+      ownerActivation?.segments?.find(
+        (segment) => segment.evidenceId === nestedWaitEvidence?.id
+      )
+    ).toMatchObject({
+      type: 'child-wait',
+      startTime: at(4),
+      endTime: at(6),
+      durationMs: 2000,
+    });
+  });
+
+  it('keeps continuation evidence activation-local and leaves the physical gap unclassified', () => {
+    const first = process('local-first', 1, 2, {
+      messages: [
+        message('local-first-prompt', 1, { type: 'user', content: 'first', isSidechain: true }),
+        message('local-first-output', 2, {
+          parentUuid: 'local-first-prompt',
+          requestId: 'reused-request',
+          isSidechain: true,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+      ],
+    });
+    const continuation = process('local-second', 5, 6, {
+      messages: [
+        message('local-second-prompt', 5, {
+          parentUuid: 'local-first-output',
+          type: 'user',
+          content: 'second',
+          isSidechain: true,
+        }),
+        message('local-second-output', 6, {
+          parentUuid: 'local-second-prompt',
+          requestId: 'reused-request',
+          isSidechain: true,
+          usage: { input_tokens: 2, output_tokens: 2 },
+        }),
+      ],
+    });
+
+    const row = buildSwimlane([], [first, continuation], []).childRows[0];
+
+    expect(row.activations).toHaveLength(2);
+    expect(row.activations[0].evidence?.every((evidence) => evidence.endTime <= at(2))).toBe(true);
+    expect(row.activations[1].evidence?.every((evidence) => evidence.startTime >= at(5))).toBe(true);
+    expect(row.activations[0].evidence?.[0].id).not.toBe(row.activations[1].evidence?.[0].id);
+    expect(
+      row.activations.flatMap((activation) => activation.segments ?? []).some(
+        (segment) => segment.startTime < at(5) && segment.endTime > at(2)
+      )
+    ).toBe(false);
+  });
+
+  it('uses collision-proof child evidence identities for hyphenated process and request ids', () => {
+    const first = process('a', 1, 2, {
+      messages: [
+        message('collision-first', 1, {
+          isSidechain: true,
+          requestId: 'b-assistant-output-c',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+      ],
+    });
+    const second = process('a-assistant-output-b', 3, 4, {
+      messages: [
+        message('collision-second', 3, {
+          isSidechain: true,
+          requestId: 'c',
+          usage: { input_tokens: 2, output_tokens: 2 },
+        }),
+      ],
+    });
+
+    const evidenceIds = buildSwimlane([], [first, second], []).childRows.flatMap((row) =>
+      row.activations.flatMap((activation) =>
+        (activation.evidence ?? []).map((evidence) => evidence.id)
+      )
+    );
+
+    expect(evidenceIds).toHaveLength(2);
+    expect(new Set(evidenceIds).size).toBe(2);
+  });
+
+  it('treats teammate sidechain prompts as child submissions without inferring human wait', () => {
+    const child = process('teammate-prompt-child', 1, 3, {
+      messages: [
+        message('teammate-prompt', 1, {
+          type: 'user',
+          content: '<teammate-message teammate_id="researcher">Please continue</teammate-message>',
+          isSidechain: true,
+        }),
+        message('teammate-response', 2, {
+          parentUuid: 'teammate-prompt',
+          requestId: 'teammate-request',
+          isSidechain: true,
+          usage: { input_tokens: 3, output_tokens: 2 },
+        }),
+      ],
+    });
+
+    const activation = buildSwimlane([], [child], []).childRows[0].activations[0];
+
+    expect(activation.evidence?.map((evidence) => evidence.type)).toEqual([
+      'model-response',
+      'assistant-output',
+    ]);
+    expect(activation.evidence?.some((evidence) => evidence.type === 'human-wait')).toBe(false);
+  });
+
+  it('classifies a matched child AskUserQuestion locally without adding parent HITL marks', () => {
+    const parentAsk = {
+      id: 'parent-ask',
+      name: 'AskUserQuestion',
+      input: {},
+      isTask: false,
+    };
+    const childAsk = { ...parentAsk, id: 'child-ask' };
+    const rootMessages = [
+      message('parent-ask-call', 0, { toolCalls: [parentAsk] }),
+      message('parent-ask-answer', 1, {
+        type: 'user',
+        isMeta: true,
+        sourceToolUseID: parentAsk.id,
+      }),
+    ];
+    const child = process('asking-child', 2, 5, {
+      messages: [
+        message('child-ask-call', 2, { isSidechain: true, toolCalls: [childAsk] }),
+        message('child-ask-answer', 4, {
+          type: 'user',
+          isMeta: true,
+          isSidechain: true,
+          sourceToolUseID: childAsk.id,
+        }),
+      ],
+    });
+
+    const model = buildSwimlane([], [child], rootMessages);
+    const activation = model.childRows[0].activations[0];
+    const childWaitEvidence = activation.evidence?.find(
+      (evidence) => evidence.type === 'human-wait'
+    );
+
+    expect(model.hitlMarks.map((mark) => [mark.toolUseId, mark.type])).toEqual([
+      [parentAsk.id, 'ask'],
+      [parentAsk.id, 'answer'],
+    ]);
+    expect(childWaitEvidence).toMatchObject({
+      toolUseId: childAsk.id,
+      startTime: at(2),
+      endTime: at(4),
+      durationMs: 2000,
+    });
+    expect(
+      activation.segments?.find((segment) => segment.evidenceId === childWaitEvidence?.id)
+    ).toMatchObject({ type: 'human-wait', startTime: at(2), endTime: at(4) });
+  });
+
   it('uses deterministic epoch bounds for empty or wholly invalid input', () => {
     const empty = buildSwimlane([], [], []);
     expect(empty).toMatchObject({

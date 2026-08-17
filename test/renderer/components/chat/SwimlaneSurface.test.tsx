@@ -1429,6 +1429,305 @@ describe('SwimlaneSurface', () => {
     expect(onTarget).toHaveBeenCalledTimes(2);
   });
 
+  it('renders classified child segments as siblings and preserves one activation target', async () => {
+    const model = mixedModel();
+    const target = {
+      kind: 'subagent',
+      groupId: 'child-owner',
+      processId: 'process-first',
+      spawnId: 'spawn-first',
+    } as const;
+    model.childRows = [
+      {
+        id: 'classified-row',
+        label: 'Classified child',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'classified-activation',
+            processId: 'process-first',
+            startTime: at(1),
+            endTime: at(4),
+            durationMs: 3000,
+            metrics: metrics({ inputTokens: 30, outputTokens: 10 }),
+            target,
+            evidence: [
+              {
+                id: 'child-output-evidence',
+                type: 'assistant-output',
+                startTime: at(1),
+                endTime: at(2),
+                durationMs: 1000,
+                requestId: 'child-request',
+                metrics: metrics({ inputTokens: 8, outputTokens: 2 }),
+              },
+              {
+                id: 'child-tool-evidence',
+                type: 'tool-execution',
+                startTime: at(2),
+                endTime: at(2.005),
+                durationMs: 5,
+                toolUseId: 'child-read',
+                label: 'Read',
+              },
+            ],
+            segments: [
+              {
+                id: 'child-output-metric-owner',
+                type: 'assistant-output',
+                startTime: at(1),
+                endTime: at(1.005),
+                durationMs: 5,
+                evidenceId: 'child-output-evidence',
+                requestId: 'child-request',
+                metrics: metrics({ inputTokens: 8, outputTokens: 2 }),
+              },
+              {
+                id: 'child-output-segment',
+                type: 'assistant-output',
+                startTime: at(1.005),
+                endTime: at(2),
+                durationMs: 995,
+                evidenceId: 'child-output-evidence',
+                requestId: 'child-request',
+              },
+              {
+                id: 'child-tool-segment',
+                type: 'tool-execution',
+                startTime: at(2),
+                endTime: at(2.005),
+                durationMs: 5,
+                evidenceId: 'child-tool-evidence',
+              },
+              {
+                id: 'invalid-child-segment',
+                type: 'future-child-segment',
+                startTime: at(2),
+                endTime: at(3),
+                durationMs: 1000,
+              },
+              {
+                id: 'clipped-child-segment',
+                type: 'unattributed',
+                startTime: at(0),
+                endTime: at(1.5),
+                durationMs: 1500,
+              },
+            ],
+          },
+        ],
+      },
+    ] as unknown as SwimlaneModel['childRows'];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const envelope = element(host, 'swimlane-activation-classified-activation');
+    const output = element(
+      host,
+      'swimlane-child-segment-classified-activation-child-output-segment'
+    );
+
+    expect(envelope.tagName).toBe('DIV');
+    expect(envelope.getAttribute('aria-hidden')).toBe('true');
+    expect(output.tagName).toBe('BUTTON');
+    expect(output.dataset.segmentType).toBe('assistant-output');
+    expect(
+      element(
+        host,
+        'swimlane-child-segment-classified-activation-clipped-child-segment'
+      ).style.width
+    ).toBe('5%');
+    expect(host.querySelector('[data-testid*="invalid-child-segment"]')).toBeNull();
+    expect(element(host, 'swimlane-suppressed-activity').textContent).toContain(
+      'Classified child tool execution (Read) — 5ms'
+    );
+
+    await mouseOver(output);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Input8');
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Output2');
+    expect(element(document, 'swimlane-tooltip').textContent).not.toContain('Input30');
+    await mouseOut(output);
+    await focus(output);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Input8');
+    expect(element(document, 'swimlane-tooltip').textContent).not.toContain('Output10');
+    await blur(output);
+
+    await act(async () => output.click());
+    expect(onTarget.mock.calls).toEqual([[target]]);
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 6);
+    const tool = element(
+      host,
+      'swimlane-child-segment-classified-activation-child-tool-segment'
+    );
+    expect(host.querySelector('[data-testid="swimlane-suppressed-activity"]')).toBeNull();
+    await act(async () => tool.click());
+    expect(onTarget.mock.calls).toEqual([[target], [target]]);
+  });
+
+  it('falls back to aggregate child bars when supplied segments normalize empty', async () => {
+    const model = mixedModel();
+    const target = {
+      kind: 'subagent',
+      groupId: 'fallback-owner',
+      processId: 'fallback-process',
+    } as const;
+    model.childRows = [
+      {
+        id: 'fallback-row',
+        label: 'Fallback child',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'all-invalid-segments',
+            processId: 'fallback-process',
+            startTime: at(1),
+            endTime: at(2),
+            durationMs: 1000,
+            metrics: metrics({ inputTokens: 7 }),
+            target,
+            segments: [
+              {
+                id: 'invalid-type',
+                type: 'future-segment',
+                startTime: at(1),
+                endTime: at(2),
+                durationMs: 1000,
+              },
+            ],
+          },
+          {
+            id: 'empty-segments',
+            processId: 'empty-process',
+            startTime: at(3),
+            endTime: at(4),
+            durationMs: 1000,
+            target: { ...target, processId: 'empty-process' },
+            segments: [],
+          },
+        ],
+      },
+    ] as unknown as SwimlaneModel['childRows'];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const invalid = element(host, 'swimlane-activation-all-invalid-segments');
+    const empty = element(host, 'swimlane-activation-empty-segments');
+
+    expect(invalid.tagName).toBe('BUTTON');
+    expect(empty.tagName).toBe('BUTTON');
+    await mouseOver(invalid);
+    expect(element(document, 'swimlane-tooltip').textContent).toContain('Input7');
+    await mouseOut(invalid);
+    await act(async () => {
+      invalid.click();
+      empty.click();
+    });
+    expect(onTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it('discloses a sub-pixel unattributed segmented activation exactly once', async () => {
+    const model = mixedModel();
+    const target = {
+      kind: 'subagent',
+      groupId: 'tiny-owner',
+      processId: 'tiny-process',
+    } as const;
+    model.childRows = [
+      {
+        id: 'tiny-row',
+        label: 'Tiny child',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'tiny-unattributed',
+            processId: 'tiny-process',
+            startTime: at(2),
+            endTime: at(2.005),
+            durationMs: 5,
+            metrics: metrics({ inputTokens: 7, outputTokens: 3 }),
+            target,
+            evidence: [],
+            segments: [
+              {
+                id: 'tiny-unattributed-segment',
+                type: 'unattributed',
+                startTime: at(2),
+                endTime: at(2.005),
+                durationMs: 5,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const suppressed = element(host, 'swimlane-suppressed-activity');
+
+    expect(suppressed.dataset.suppressedCount).toBe('1');
+    expect(suppressed.textContent).toContain('Tiny child activation — 5ms');
+    expect(suppressed.textContent).toContain('input 7');
+    await act(async () => suppressed.querySelector('button')?.click());
+    expect(onTarget).toHaveBeenCalledOnce();
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 6);
+    expect(
+      element(host, 'swimlane-child-segment-tiny-unattributed-tiny-unattributed-segment')
+    ).toBeTruthy();
+    expect(host.querySelector('[data-testid="swimlane-suppressed-activity"]')).toBeNull();
+  });
+
+  it('remaps duplicate child evidence ids independently for each activation', async () => {
+    const model = mixedModel();
+    const activation = (id: string, start: number, end: number) => ({
+      id,
+      processId: `${id}-process`,
+      startTime: at(start),
+      endTime: at(end),
+      durationMs: (end - start) * 1000,
+      evidence: [
+        {
+          id: 'reused-evidence',
+          type: 'assistant-output' as const,
+          startTime: at(start),
+          endTime: at(end),
+          durationMs: (end - start) * 1000,
+          metrics: metrics({ inputTokens: start }),
+        },
+      ],
+      segments: [
+        {
+          id: `${id}-segment`,
+          type: 'assistant-output' as const,
+          startTime: at(start),
+          endTime: at(end),
+          durationMs: (end - start) * 1000,
+          evidenceId: 'reused-evidence',
+        },
+      ],
+    });
+    model.childRows = [
+      {
+        id: 'duplicate-evidence-row',
+        label: 'Duplicate evidence child',
+        parentRowId: null,
+        depth: 0,
+        activations: [activation('duplicate-first', 1, 2), activation('duplicate-second', 3, 4)],
+      },
+    ];
+    const host = await render(model);
+
+    expect(
+      element(host, 'swimlane-child-segment-duplicate-first-duplicate-first-segment')
+    ).toBeTruthy();
+    expect(
+      element(host, 'swimlane-child-segment-duplicate-second-duplicate-second-segment')
+    ).toBeTruthy();
+    expect(host.querySelector('[data-testid="swimlane-suppressed-activity"]')).toBeNull();
+  });
+
   it('lets the most recently activated modality win and falls back to the other', async () => {
     const host = await render(mixedModel());
     const work = element(host, 'swimlane-parent-segment-work');

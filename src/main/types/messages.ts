@@ -365,7 +365,7 @@ export function isParsedCompactMessage(msg: ParsedMessage): boolean {
  */
 const TEAMMATE_MESSAGE_REGEX = /^<teammate-message\s+teammate_id="([^"]+)"/;
 
-function isParsedTeammateMessage(msg: ParsedMessage): boolean {
+export function isParsedTeammateMessage(msg: ParsedMessage): boolean {
   if (msg.type !== 'user' || msg.isMeta) return false;
   const content = msg.content;
   if (typeof content === 'string') return TEAMMATE_MESSAGE_REGEX.test(content.trim());

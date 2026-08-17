@@ -1,12 +1,14 @@
 import {
   type Chunk,
   isAIChunk,
+  isParsedTeammateMessage,
   isParsedUserChunkMessage,
   type ParsedMessage,
   type Process,
   type SessionMetrics,
   SWIMLANE_SCHEMA_VERSION,
   type SwimlaneChildRow,
+  type SwimlaneChildSegment,
   type SwimlaneEvidenceInterval,
   type SwimlaneHitlMark,
   type SwimlaneModel,
@@ -43,9 +45,13 @@ interface RequestRange extends EvidenceRange {
   metrics: SessionMetrics;
 }
 
-interface ParentSegmentDraft extends TimedRange {
+interface SegmentDraft extends TimedRange {
   type: SwimlaneSegmentType;
   evidence?: EvidenceRange;
+}
+
+interface OwnedChildRange extends EvidenceRange {
+  ownerId: string | null;
 }
 
 interface LogicalChild {
@@ -106,7 +112,15 @@ function processRange(process: Process, fallbackTime = EPOCH): TimedRange {
   return validProcessRange(process) ?? { start: fallbackTime, end: fallbackTime };
 }
 
-function buildRequestRanges(chunks: Chunk[], messages: ParsedMessage[]): RequestRange[] {
+function namespacedId(namespace: string, id: string): string {
+  return namespace ? `${namespace.length}:${namespace}${id.length}:${id}` : id;
+}
+
+function buildRequestRanges(
+  chunks: Chunk[],
+  messages: ParsedMessage[],
+  namespace = ''
+): RequestRange[] {
   const chunkByMessageId = new Map<string, string>();
   for (const chunk of chunks) {
     if (!isAIChunk(chunk)) continue;
@@ -119,7 +133,6 @@ function buildRequestRanges(chunks: Chunk[], messages: ParsedMessage[]): Request
   messages.forEach((message) => {
     if (
       message.type !== 'assistant' ||
-      message.isSidechain ||
       !message.requestId ||
       validTime(message.timestamp) === undefined
     ) {
@@ -138,7 +151,7 @@ function buildRequestRanges(chunks: Chunk[], messages: ParsedMessage[]): Request
       const ordered = sortedMessages(group);
       const chunkId = group.map((message) => chunkByMessageId.get(message.uuid)).find(Boolean);
       return {
-        id: `assistant-output-${requestId}`,
+        id: namespacedId(namespace, `assistant-output-${requestId}`),
         type: 'assistant-output',
         start: range.start,
         end: range.end,
@@ -189,15 +202,20 @@ function toolUseIds(message: ParsedMessage): string[] {
   return [...ids];
 }
 
-function isSubmission(message: ParsedMessage): boolean {
+function isSubmission(message: ParsedMessage, allowTeammateMessage = false): boolean {
   return (
-    message.type === 'user' && (isParsedUserChunkMessage(message) || toolUseIds(message).length > 0)
+    message.type === 'user' &&
+    (isParsedUserChunkMessage(message) ||
+      (allowTeammateMessage && isParsedTeammateMessage(message)) ||
+      toolUseIds(message).length > 0)
   );
 }
 
 function buildModelResponseRanges(
   messages: ParsedMessage[],
-  requestRanges: RequestRange[]
+  requestRanges: RequestRange[],
+  namespace = '',
+  allowTeammateSubmission = false
 ): EvidenceRange[] {
   const messageById = new Map(messages.map((message) => [message.uuid, message]));
   const ranges: EvidenceRange[] = [];
@@ -212,14 +230,14 @@ function buildModelResponseRanges(
     if (
       !firstAssistant ||
       !submission ||
-      !isSubmission(submission) ||
+      !isSubmission(submission, allowTeammateSubmission) ||
       start === undefined ||
       start > request.start
     ) {
       continue;
     }
     ranges.push({
-      id: `model-response-${request.requestId}`,
+      id: namespacedId(namespace, `model-response-${request.requestId}`),
       type: 'model-response',
       start,
       end: request.start,
@@ -233,11 +251,15 @@ function buildModelResponseRanges(
   return ranges;
 }
 
-function buildToolAndHumanRanges(messages: ParsedMessage[]): {
+function buildToolAndHumanRanges(
+  messages: ParsedMessage[],
+  namespace = '',
+  inferLinkedResume = true
+): {
   ranges: EvidenceRange[];
   marks: SwimlaneHitlMark[];
 } {
-  const parentMessages = sortedMessages(messages.filter((message) => !message.isSidechain));
+  const parentMessages = sortedMessages(messages);
   const messageById = new Map(parentMessages.map((message) => [message.uuid, message]));
   const resultsByToolId = new Map<string, { index: number; message: ParsedMessage }[]>();
   parentMessages.forEach((message, index) => {
@@ -265,7 +287,7 @@ function buildToolAndHumanRanges(messages: ParsedMessage[]): {
       const isAsk = call.name === 'AskUserQuestion';
       if (isAsk) {
         marks.push({
-          id: `human-wait-${call.id}-start`,
+          id: namespacedId(namespace, `human-wait-${call.id}-start`),
           type: 'ask',
           timestamp: new Date(start),
           source: 'explicit-ask',
@@ -274,7 +296,10 @@ function buildToolAndHumanRanges(messages: ParsedMessage[]): {
       }
       if (resultTime === undefined) continue;
       const end = resultTime;
-      const id = `${isAsk ? 'human-wait' : 'tool-execution'}-${call.id}`;
+      const id = namespacedId(
+        namespace,
+        `${isAsk ? 'human-wait' : 'tool-execution'}-${call.id}`
+      );
       ranges.push({
         id,
         type: isAsk ? 'human-wait' : 'tool-execution',
@@ -296,37 +321,39 @@ function buildToolAndHumanRanges(messages: ParsedMessage[]): {
     }
   }
 
-  for (const message of parentMessages.filter(isParsedUserChunkMessage)) {
-    const end = validTime(message.timestamp);
-    const parent = message.parentUuid ? messageById.get(message.parentUuid) : undefined;
-    const start = parent ? validTime(parent.timestamp) : undefined;
-    if (parent?.type !== 'assistant' || start === undefined || end === undefined || end <= start) {
-      continue;
-    }
-    const id = `human-resume-${parent.uuid}-${message.uuid}`;
-    ranges.push({
-      id,
-      type: 'human-wait',
-      start,
-      end,
-      requestId: parent.requestId,
-      startMessageId: parent.uuid,
-      endMessageId: message.uuid,
-    });
-    marks.push(
-      {
-        id: `${id}-start`,
-        type: 'resume-start',
-        timestamp: new Date(start),
-        source: 'linked-resume',
-      },
-      {
-        id: `${id}-end`,
-        type: 'resume',
-        timestamp: new Date(end),
-        source: 'linked-resume',
+  if (inferLinkedResume) {
+    for (const message of parentMessages.filter(isParsedUserChunkMessage)) {
+      const end = validTime(message.timestamp);
+      const parent = message.parentUuid ? messageById.get(message.parentUuid) : undefined;
+      const start = parent ? validTime(parent.timestamp) : undefined;
+      if (parent?.type !== 'assistant' || start === undefined || end === undefined || end <= start) {
+        continue;
       }
-    );
+      const id = namespacedId(namespace, `human-resume-${parent.uuid}-${message.uuid}`);
+      ranges.push({
+        id,
+        type: 'human-wait',
+        start,
+        end,
+        requestId: parent.requestId,
+        startMessageId: parent.uuid,
+        endMessageId: message.uuid,
+      });
+      marks.push(
+        {
+          id: `${id}-start`,
+          type: 'resume-start',
+          timestamp: new Date(start),
+          source: 'linked-resume',
+        },
+        {
+          id: `${id}-end`,
+          type: 'resume',
+          timestamp: new Date(end),
+          source: 'linked-resume',
+        }
+      );
+    }
   }
 
   ranges.sort((left, right) => left.start - right.start || left.end - right.end);
@@ -515,7 +542,8 @@ function buildChildRows(
   processes: Process[],
   rootMessages: ParsedMessage[],
   fallbackTime: number,
-  childTargets: Map<string, SwimlaneNavigationTarget>
+  childTargets: Map<string, SwimlaneNavigationTarget>,
+  childWaitRanges: OwnedChildRange[]
 ): SwimlaneChildRow[] {
   const children = unionContinuations(processes, fallbackTime);
   assignChildParents(children, rootMessages);
@@ -552,6 +580,31 @@ function buildChildRows(
       depth,
       activations: child.processes.map((process) => {
         const range = processRange(process, fallbackTime);
+        const target = childTargets.get(process.id);
+        const namespace = `child-${process.id}`;
+        const requestRanges = buildRequestRanges([], process.messages, namespace);
+        const modelResponseRanges = buildModelResponseRanges(
+          process.messages,
+          requestRanges,
+          namespace,
+          true
+        );
+        const toolAndHuman = buildToolAndHumanRanges(process.messages, namespace, false);
+        const evidenceRanges = clipEvidenceRanges(
+          [
+            ...requestRanges,
+            ...modelResponseRanges,
+            ...toolAndHuman.ranges,
+            ...childWaitRanges.filter((wait) => wait.ownerId === process.id),
+          ],
+          range.start,
+          range.end
+        )
+          .map((evidence) => ({ ...evidence, target }))
+          .sort(
+            (left, right) =>
+              left.start - right.start || left.end - right.end || left.id.localeCompare(right.id)
+          );
         return {
           id: process.id,
           processId: process.id,
@@ -559,7 +612,15 @@ function buildChildRows(
           endTime: new Date(range.end),
           durationMs: range.end - range.start,
           metrics: { ...process.metrics },
-          target: childTargets.get(process.id),
+          evidence: evidenceRanges.map(serializeEvidence),
+          segments: buildSegments(
+            range.start,
+            range.end,
+            evidenceRanges,
+            requestRanges,
+            target
+          ),
+          target,
         };
       }),
     });
@@ -575,7 +636,7 @@ function linkedChildRanges(
   processes: Process[],
   messages: ParsedMessage[],
   childTargets: Map<string, SwimlaneNavigationTarget>
-): EvidenceRange[] {
+): OwnedChildRange[] {
   const allMessagesById = new Map<string, ParsedMessage>();
   for (const message of [...messages, ...processes.flatMap((process) => process.messages)]) {
     allMessagesById.set(message.uuid, message);
@@ -689,7 +750,7 @@ function linkedChildRanges(
   }
 
   return processes
-    .map((process): EvidenceRange | undefined => {
+    .map((process): OwnedChildRange | undefined => {
       const spawn = linkByProcess.get(process.id);
       const processBounds = validProcessRange(process);
       if (!spawn || !processBounds) return undefined;
@@ -699,7 +760,7 @@ function linkedChildRanges(
       };
       if (range.end < range.start) return undefined;
       return {
-        id: `child-wait-${process.id}`,
+        id: `child-wait-${spawn.ownerId ?? 'root'}-${process.id}`,
         type: 'child-wait' as const,
         start: range.start,
         end: range.end,
@@ -715,9 +776,10 @@ function linkedChildRanges(
           parentId: null,
           hasIdentityOwner: false,
         }),
+        ownerId: spawn.ownerId,
       };
     })
-    .filter((range): range is EvidenceRange => range !== undefined);
+    .filter((range): range is OwnedChildRange => range !== undefined);
 }
 
 const evidencePriority: Record<AttributedSegmentType, number> = {
@@ -753,19 +815,33 @@ function activeEvidence(
     )[0];
 }
 
-function buildParentSegments(
+function clipEvidenceRanges(
+  ranges: EvidenceRange[],
+  axisStart: number,
+  axisEnd: number
+): EvidenceRange[] {
+  return ranges.flatMap((range) => {
+    const start = Math.max(axisStart, range.start);
+    const end = Math.min(axisEnd, range.end);
+    if (end < start || range.end < axisStart || range.start > axisEnd) return [];
+    return [{ ...range, start, end }];
+  });
+}
+
+function buildSegments(
   axisStart: number,
   axisEnd: number,
   evidenceRanges: EvidenceRange[],
-  requestRanges: RequestRange[]
-): SwimlaneParentSegment[] {
+  requestRanges: RequestRange[],
+  defaultTarget?: SwimlaneNavigationTarget
+): SwimlaneChildSegment[] {
   const boundaries = new Set<number>([axisStart, axisEnd]);
   for (const range of evidenceRanges) {
     boundaries.add(Math.max(axisStart, Math.min(axisEnd, range.start)));
     boundaries.add(Math.max(axisStart, Math.min(axisEnd, range.end)));
   }
   const points = [...boundaries].sort((left, right) => left - right);
-  const drafts: ParentSegmentDraft[] = [];
+  const drafts: SegmentDraft[] = [];
 
   for (let index = 0; index < points.length - 1; index++) {
     const start = points[index];
@@ -800,6 +876,7 @@ function buildParentSegments(
         startTime: new Date(draft.start),
         endTime: new Date(draft.end),
         durationMs: draft.end - draft.start,
+        target: defaultTarget,
       };
     }
     const sliceCount = sliceCounts.get(evidence.id) ?? 0;
@@ -817,7 +894,10 @@ function buildParentSegments(
       metrics: ownsMetrics && request ? { ...request.metrics } : undefined,
       requestId: evidence.requestId,
       chunkId: request?.chunkId,
-      target: request?.chunkId ? { kind: 'turn', groupId: request.chunkId } : undefined,
+      target:
+        defaultTarget ??
+        evidence.target ??
+        (request?.chunkId ? { kind: 'turn', groupId: request.chunkId } : undefined),
     };
   });
 
@@ -835,7 +915,10 @@ function buildParentSegments(
       metrics: ownsMetrics ? { ...request.metrics } : undefined,
       requestId: evidence.requestId,
       chunkId: request?.chunkId,
-      target: request?.chunkId ? { kind: 'turn', groupId: request.chunkId } : undefined,
+      target:
+        defaultTarget ??
+        evidence.target ??
+        (request?.chunkId ? { kind: 'turn', groupId: request.chunkId } : undefined),
     });
   }
 
@@ -885,16 +968,22 @@ export function buildSwimlane(
   const axisStart = axisRange?.start ?? EPOCH;
   const axisEnd = axisRange?.end ?? EPOCH;
   const childTargets = buildChildTargets(chunks);
-  const childRows = buildChildRows(processes, mainMessages, axisStart, childTargets);
+  const childRanges = linkedChildRanges(processes, messages, childTargets);
+  const childRows = buildChildRows(
+    processes,
+    mainMessages,
+    axisStart,
+    childTargets,
+    childRanges
+  );
   const requestRanges = buildRequestRanges(chunks, mainMessages);
   const modelResponseRanges = buildModelResponseRanges(mainMessages, requestRanges);
   const toolAndHuman = buildToolAndHumanRanges(mainMessages);
-  const childRanges = linkedChildRanges(processes, messages, childTargets);
   const evidenceRanges: EvidenceRange[] = [
     ...requestRanges,
     ...modelResponseRanges,
     ...toolAndHuman.ranges,
-    ...childRanges,
+    ...childRanges.filter((range) => range.ownerId === null),
   ].sort(
     (left, right) =>
       left.start - right.start || left.end - right.end || left.id.localeCompare(right.id)
@@ -906,7 +995,7 @@ export function buildSwimlane(
     endTime: new Date(axisEnd),
     durationMs: axisEnd - axisStart,
     evidence: evidenceRanges.map(serializeEvidence),
-    parentSegments: buildParentSegments(axisStart, axisEnd, evidenceRanges, requestRanges),
+    parentSegments: buildSegments(axisStart, axisEnd, evidenceRanges, requestRanges),
     hitlMarks: toolAndHuman.marks,
     childRows,
   };

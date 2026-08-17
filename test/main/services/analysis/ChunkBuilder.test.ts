@@ -489,6 +489,8 @@ describe('ChunkBuilder', () => {
       expect(detail.session.hasSubagents).toBe(false);
       expect(detail.swimlane.childRows).toHaveLength(1);
       expect(detail.swimlane.childRows[0].activations[0].processId).toBe('resolved-child');
+      expect(detail.swimlane.childRows[0].activations[0].evidence).toEqual([]);
+      expect(detail.swimlane.childRows[0].activations[0].segments).toHaveLength(1);
       expect(JSON.stringify(serializedProjection)).not.toContain('child-message');
     });
 
@@ -553,7 +555,7 @@ describe('ChunkBuilder', () => {
         }>;
       };
 
-      expect(serialized.schemaVersion).toBe(1);
+      expect(serialized.schemaVersion).toBe(2);
       expect(serialized.evidence.find((evidence) => evidence.toolUseId === 'read-1')).toMatchObject(
         {
           type: 'tool-execution',

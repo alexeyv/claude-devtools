@@ -74,7 +74,7 @@ export interface Process {
 // =============================================================================
 
 /** Current IPC schema for the evidence-backed swimlane projection. */
-export const SWIMLANE_SCHEMA_VERSION = 1 as const;
+export const SWIMLANE_SCHEMA_VERSION = 2 as const;
 
 /** Evidence-based classification for every interval on the parent lane. */
 export type SwimlaneSegmentType =
@@ -135,6 +135,9 @@ export interface SwimlaneParentSegment {
   target?: SwimlaneNavigationTarget;
 }
 
+/** A classified slice inside one physical child activation. */
+export type SwimlaneChildSegment = SwimlaneParentSegment;
+
 /** A labeled boundary for explicit AskUserQuestion or inferred resume waits. */
 export interface SwimlaneHitlMark {
   id: string;
@@ -152,6 +155,10 @@ export interface SwimlaneChildActivation {
   endTime: Date;
   durationMs: number;
   metrics?: SessionMetrics;
+  /** Exact activation-local causal ranges, including suppressed overlap and sub-pixel evidence. */
+  evidence?: SwimlaneEvidenceInterval[];
+  /** Classified slices partitioning this activation without crossing continuation gaps. */
+  segments?: SwimlaneChildSegment[];
   /** Existing root-session SubagentItem destination, when one is known exactly. */
   target?: SwimlaneNavigationTarget;
 }
