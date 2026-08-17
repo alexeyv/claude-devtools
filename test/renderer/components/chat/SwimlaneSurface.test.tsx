@@ -20,10 +20,12 @@ let tooltipWidth = 260;
 let tooltipHeight = 180;
 let triggerLeft = 200;
 let triggerTop = 100;
+let viewportClientWidthOverride: number | undefined;
 
 class MeasuredResizeObserver {
   static instances: MeasuredResizeObserver[] = [];
   private readonly callback: ResizeObserverCallback;
+  private active = true;
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
@@ -32,10 +34,12 @@ class MeasuredResizeObserver {
 
   observe(): void {}
   unobserve(): void {}
-  disconnect(): void {}
+  disconnect(): void {
+    this.active = false;
+  }
 
   trigger(): void {
-    this.callback([], this as unknown as ResizeObserver);
+    if (this.active) this.callback([], this as unknown as ResizeObserver);
   }
 }
 
@@ -176,10 +180,6 @@ function mixedModel(): SwimlaneModel {
   };
 }
 
-function percentageWidth(styleWidth: string): number {
-  return styleWidth.endsWith('%') ? (Number.parseFloat(styleWidth) / 100) * clockWidth : 0;
-}
-
 async function render(
   model: SwimlaneModel,
   onTarget?: (target: SwimlaneNavigationTarget) => void
@@ -230,20 +230,36 @@ async function triggerResizeObservers(): Promise<void> {
   await act(async () => MeasuredResizeObserver.instances.forEach((observer) => observer.trigger()));
 }
 
+async function setRangeValue(target: HTMLInputElement, value: number): Promise<void> {
+  await act(async () => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setValue?.call(target, String(value));
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function click(target: HTMLElement): Promise<void> {
+  await act(async () => target.click());
+}
+
 beforeEach(() => {
   clockWidth = 720;
   tooltipWidth = 260;
   tooltipHeight = 180;
   triggerLeft = 200;
   triggerTop = 100;
+  viewportClientWidthOverride = undefined;
   MeasuredResizeObserver.instances = [];
   vi.stubGlobal('ResizeObserver', MeasuredResizeObserver);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
     if (this.dataset.testid === 'swimlane-tooltip') {
       return new DOMRect(0, 0, tooltipWidth, tooltipHeight);
     }
+    if (this.dataset.testid === 'swimlane-horizontal-scroll') {
+      return new DOMRect(0, 0, clockWidth + 184 + 32, 300);
+    }
     if (this.dataset.clockWidth !== undefined) {
-      return new DOMRect(184, 80, clockWidth, 34);
+      return new DOMRect(184, 80, Number(this.dataset.clockWidth), 34);
     }
     if (this.dataset.testid?.endsWith('-duration')) {
       return new DOMRect(0, 0, (this.textContent?.length ?? 0) * 6, 12);
@@ -252,10 +268,19 @@ beforeEach(() => {
       this.dataset.testid?.startsWith('swimlane-parent-segment-') ||
       this.dataset.testid?.startsWith('swimlane-activation-')
     ) {
-      const width = percentageWidth(this.style.width);
+      const renderedClockWidth = Number(this.parentElement?.dataset.clockWidth) || clockWidth;
+      const width = this.style.width.endsWith('%')
+        ? (Number.parseFloat(this.style.width) / 100) * renderedClockWidth
+        : 0;
       return new DOMRect(triggerLeft, triggerTop, width, 22);
     }
     return new DOMRect(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function () {
+    if (this.dataset.testid === 'swimlane-horizontal-scroll') {
+      return viewportClientWidthOverride ?? clockWidth + 184 + 32;
+    }
+    return 0;
   });
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
@@ -274,7 +299,8 @@ describe('SwimlaneSurface', () => {
     const host = await render(mixedModel());
 
     expect(element(host, 'swimlane-horizontal-scroll').style.overflowX).toBe('auto');
-    expect(element(host, 'swimlane-clock-canvas').style.minWidth).toBe('904px');
+    expect(element(host, 'swimlane-horizontal-scroll').style.overflowY).toBe('auto');
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
     expect(element(host, 'swimlane-parent-row').style.height).toBe('34px');
     expect(element(host, 'swimlane-child-row-child').style.height).toBe('34px');
     expect(element(host, 'swimlane-axis-midpoint').textContent).toBe('5.0s');
@@ -342,6 +368,245 @@ describe('SwimlaneSurface', () => {
       expect(mark.dataset.clockPercentage).toBe(percentage);
       expect(mark.style.left).toBe(`calc(${percentage}% + 0px)`);
     }
+  });
+
+  it('fits the complete clock at 100% with accessible scale feedback and two-axis overflow', async () => {
+    const host = await render(mixedModel());
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const canvas = element(host, 'swimlane-clock-canvas');
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const output = element(host, 'swimlane-zoom-output');
+    const parentRow = element(host, 'swimlane-parent-row');
+    const parentLabel = parentRow.firstElementChild as HTMLElement;
+
+    expect(range.type).toBe('range');
+    expect(range.min).toBe('100');
+    expect(range.max).toBe('400');
+    expect(range.step).toBe('25');
+    expect(range.value).toBe('100');
+    expect(range.getAttribute('aria-valuetext')).toBeNull();
+    expect(range.getAttribute('aria-describedby')).toBe(output.id);
+    expect(output.getAttribute('aria-live')).toBeNull();
+    expect(output.textContent).toContain('100%');
+    expect(output.textContent).toContain('s/px');
+    expect(Number(output.dataset.secondsPerPixel)).toBeCloseTo(10 / 720);
+    expect(Number.parseFloat(canvas.style.width)).toBe(
+      viewport.getBoundingClientRect().width
+    );
+    expect(viewport.style.overflowX).toBe('auto');
+    expect(viewport.style.overflowY).toBe('auto');
+    expect(viewport.getAttribute('role')).toBe('region');
+    expect(viewport.getAttribute('aria-label')).toBe('Swimlane timeline viewport');
+    expect(parentRow.style.gridTemplateColumns).toBe('184px 720px');
+    expect(parentRow.style.height).toBe('34px');
+    expect(parentLabel.style.position).toBe('sticky');
+    expect(parentLabel.style.width).toBe('');
+    expect(parentLabel.style.fontSize).toBe('12px');
+    const controls = element(host, 'swimlane-zoom-controls');
+    const fit = element(host, 'swimlane-zoom-fit') as HTMLButtonElement;
+    const zoomOut = element(host, 'swimlane-zoom-out') as HTMLButtonElement;
+    expect(controls.style.boxSizing).toBe('border-box');
+    expect(controls.style.flexWrap).toBe('wrap');
+    expect(controls.style.minWidth).toBe('0');
+    expect(range.style.flex).toBe('1 1 140px');
+    expect(fit.style.minWidth).toBe('44px');
+    expect(zoomOut.style.minWidth).toBe('32px');
+    expect(fit.className).toContain('bg-surface-raised');
+    expect(fit.className).toContain('focus-visible:ring-2');
+    expect(fit.disabled).toBe(true);
+    expect(zoomOut.disabled).toBe(true);
+  });
+
+  it('fits to the inner viewport width when vertical scrolling consumes a gutter', async () => {
+    const host = await render(mixedModel());
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+
+    viewportClientWidthOverride = viewport.getBoundingClientRect().width - 8;
+    await triggerResizeObservers();
+
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('928px');
+    expect(element(host, 'swimlane-parent-row').style.gridTemplateColumns).toBe('184px 712px');
+    expect(Number.parseFloat(element(host, 'swimlane-clock-canvas').style.width)).toBe(
+      viewport.clientWidth
+    );
+  });
+
+  it('steps with both zoom buttons, preserves center while zooming out, and clamps controls', async () => {
+    const host = await render(mixedModel());
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const canvas = element(host, 'swimlane-clock-canvas');
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const zoomIn = element(host, 'swimlane-zoom-in') as HTMLButtonElement;
+    const zoomOut = element(host, 'swimlane-zoom-out') as HTMLButtonElement;
+    const parentRow = element(host, 'swimlane-parent-row');
+    const parentLabel = parentRow.firstElementChild as HTMLElement;
+    const initialHeight = parentRow.style.height;
+    const initialLabelFontSize = parentLabel.style.fontSize;
+    const interval = element(host, 'swimlane-parent-segment-work');
+
+    await click(zoomIn);
+
+    expect(range.value).toBe('125');
+    expect(parentRow.style.gridTemplateColumns).toBe('184px 900px');
+    expect(canvas.style.width).toBe('1116px');
+    expect(viewport.scrollLeft).toBe(90);
+    expect(Number(element(host, 'swimlane-zoom-output').dataset.secondsPerPixel)).toBeCloseTo(
+      10 / 900
+    );
+    expect(interval.style.width).toBe('20%');
+    expect(interval.getBoundingClientRect().width).toBe(180);
+    expect(parentRow.style.height).toBe(initialHeight);
+    expect(parentLabel.style.fontSize).toBe(initialLabelFontSize);
+    expect(parentLabel.style.position).toBe('sticky');
+
+    await click(zoomIn);
+    expect(range.value).toBe('150');
+    expect(canvas.style.width).toBe('1296px');
+    expect(viewport.scrollLeft).toBe(180);
+
+    viewport.scrollLeft = 270;
+    await click(zoomOut);
+    expect(range.value).toBe('125');
+    expect(canvas.style.width).toBe('1116px');
+    expect(viewport.scrollLeft).toBe(165);
+
+    await click(zoomOut);
+    expect(range.value).toBe('100');
+    expect(viewport.scrollLeft).toBe(0);
+    expect(zoomOut.disabled).toBe(true);
+
+    for (let step = 0; step < 12; step++) await click(zoomIn);
+    expect(range.value).toBe('400');
+    expect(canvas.style.width).toBe('3096px');
+    expect(zoomIn.disabled).toBe(true);
+    expect((element(host, 'swimlane-zoom-fit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('returns to Fit after panning, removes stale scroll, and dismisses active details', async () => {
+    const host = await render(mixedModel());
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const work = element(host, 'swimlane-parent-segment-work');
+
+    await setRangeValue(range, 200);
+    viewport.scrollLeft = 500;
+    await mouseOver(work);
+    expect(document.querySelector('[role="tooltip"]')).not.toBeNull();
+    await act(async () => element(host, 'swimlane-zoom-fit').click());
+
+    expect(range.value).toBe('100');
+    expect(viewport.scrollLeft).toBe(0);
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  it('resets zoom and horizontal scroll to Fit when the model is replaced', async () => {
+    const model = mixedModel();
+    const host = await render(model);
+    const initialViewport = element(host, 'swimlane-horizontal-scroll');
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 200);
+    initialViewport.scrollLeft = 500;
+    await rerender({ ...model, parentSegments: [...model.parentSegments] });
+
+    const replacementViewport = element(host, 'swimlane-horizontal-scroll');
+    expect(replacementViewport).not.toBe(initialViewport);
+    expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).value).toBe('100');
+    expect(replacementViewport.scrollLeft).toBe(0);
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
+  });
+
+  it('refits from measured viewport width and preserves center while zoomed', async () => {
+    const host = await render(mixedModel());
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+
+    await setRangeValue(range, 200);
+    expect(viewport.scrollLeft).toBe(360);
+    const oldScale = Number(element(host, 'swimlane-zoom-output').dataset.secondsPerPixel);
+
+    clockWidth = 1000;
+    await triggerResizeObservers();
+
+    expect(element(host, 'swimlane-parent-row').style.gridTemplateColumns).toBe('184px 2000px');
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('2216px');
+    expect(viewport.scrollLeft).toBe(500);
+    expect(Number(element(host, 'swimlane-zoom-output').dataset.secondsPerPixel)).toBeLessThan(
+      oldScale
+    );
+
+    await setRangeValue(range, 100);
+    clockWidth = 480;
+    await triggerResizeObservers();
+    expect(viewport.scrollLeft).toBe(0);
+    expect(element(host, 'swimlane-clock-canvas').style.width).toBe('696px');
+  });
+
+  it('keeps zero-duration scale output stable and reveals real sub-pixel detail when zoomed', async () => {
+    const pointModel = mixedModel();
+    pointModel.endTime = pointModel.startTime;
+    pointModel.durationMs = 0;
+    pointModel.parentSegments = [];
+    pointModel.hitlMarks = [];
+    pointModel.childRows = [];
+    const host = await render(pointModel);
+
+    const zeroScaleOutput = element(host, 'swimlane-zoom-output');
+    expect(zeroScaleOutput.textContent).toContain('100%');
+    expect(zeroScaleOutput.textContent).toContain('0 s/px');
+    expect(zeroScaleOutput.textContent).not.toMatch(/NaN|Infinity/);
+    expect(Number(zeroScaleOutput.dataset.secondsPerPixel)).toBe(0);
+
+    const denseModel = mixedModel();
+    denseModel.parentSegments = [
+      {
+        id: 'five-millisecond-detail',
+        type: 'assistant-output',
+        startTime: at(1),
+        endTime: at(1.005),
+        durationMs: 5,
+      },
+    ];
+    denseModel.childRows = [
+      {
+        id: 'dense-child',
+        label: 'Dense child',
+        parentRowId: null,
+        depth: 0,
+        activations: [
+          {
+            id: 'five-millisecond-child-detail',
+            processId: 'dense-process',
+            startTime: at(2),
+            endTime: at(2.005),
+            durationMs: 5,
+            metrics: metrics(),
+          },
+        ],
+      },
+    ];
+    denseModel.hitlMarks = [];
+    await rerender(denseModel);
+    expect(host.querySelector('[data-testid="swimlane-parent-segment-five-millisecond-detail"]'))
+      .toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-activation-five-millisecond-child-detail"]'))
+      .toBeNull();
+    expect(element(host, 'swimlane-suppressed-activity').dataset.suppressedCount).toBe('2');
+    expect(
+      element(host, 'swimlane-child-row-dense-child').lastElementChild?.getAttribute(
+        'data-clock-width'
+      )
+    ).toBe('720');
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 400);
+    expect(element(host, 'swimlane-parent-segment-five-millisecond-detail')).toBeTruthy();
+    expect(element(host, 'swimlane-activation-five-millisecond-child-detail')).toBeTruthy();
+    expect(
+      element(host, 'swimlane-child-row-dense-child').lastElementChild?.getAttribute(
+        'data-clock-width'
+      )
+    ).toBe('2880');
+    expect(host.querySelector('[data-testid="swimlane-suppressed-activity"]')).toBeNull();
   });
 
   it('migrates an unversioned legacy projection without trusting legacy wait categories', async () => {

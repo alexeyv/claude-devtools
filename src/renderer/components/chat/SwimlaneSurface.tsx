@@ -14,7 +14,8 @@ import type {
 import type { CSSProperties, FocusEvent, MouseEvent, RefObject } from 'react';
 
 const LABEL_COLUMN_WIDTH = 184;
-const MIN_CLOCK_WIDTH = 720;
+const CANVAS_HORIZONTAL_PADDING = 16;
+const UNMEASURED_CLOCK_WIDTH = 720;
 const MIN_MEANINGFUL_INTERVAL_WIDTH = 1;
 const ROW_HEIGHT = 34;
 const TRACK_INSET = 6;
@@ -25,6 +26,9 @@ const TOOLTIP_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 const MIN_HITL_TICK_GAP = 3;
 const SUPPRESSED_DETAIL_LIMIT = 50;
+const MIN_ZOOM_PERCENT = 100;
+const MAX_ZOOM_PERCENT = 400;
+const ZOOM_STEP_PERCENT = 25;
 const EVIDENCE_TYPES = [
   'assistant-output',
   'model-response',
@@ -367,6 +371,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function formatSecondsPerPixel(secondsPerPixel: number): string {
+  if (!Number.isFinite(secondsPerPixel) || secondsPerPixel <= 0) return '0 s/px';
+  return `${secondsPerPixel.toLocaleString(undefined, { maximumSignificantDigits: 3 })} s/px`;
+}
+
 function percentage(value: Date | string, axisStart: number, axisDuration: number): number {
   if (axisDuration <= 0) return 0;
   return clamp(((timestamp(value) - axisStart) / axisDuration) * 100, 0, 100);
@@ -635,9 +644,8 @@ const SwimlaneInterval = ({
 };
 /* eslint-enable jsx-a11y/no-noninteractive-tabindex, jsx-a11y/no-static-element-interactions -- restore default accessibility checks */
 
-const rowStyle: CSSProperties = {
+const baseRowStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: `${LABEL_COLUMN_WIDTH}px minmax(${MIN_CLOCK_WIDTH}px, 1fr)`,
   height: `${ROW_HEIGHT}px`,
 };
 
@@ -659,9 +667,12 @@ const labelStyle: CSSProperties = {
 
 const clockStyle: CSSProperties = {
   borderBottom: '1px solid var(--color-border)',
-  minWidth: `${MIN_CLOCK_WIDTH}px`,
+  minWidth: 0,
   position: 'relative',
 };
+
+const zoomButtonClassName =
+  'inline-flex min-h-8 items-center justify-center rounded border border-border bg-surface-raised px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-overlay hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-emphasis disabled:cursor-not-allowed disabled:opacity-40';
 
 const baseTrackStyle: CSSProperties = {
   backgroundColor: 'transparent',
@@ -894,11 +905,22 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   const axisDuration = Math.max(0, axisEnd - axisStart);
   const rawTooltipId = useId();
   const tooltipId = `swimlane-tooltip-${rawTooltipId.replaceAll(':', '')}`;
-  const clockRef = useRef<HTMLDivElement>(null);
+  const scaleOutputId = `${tooltipId}-scale`;
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const pendingCenterRef = useRef<number | null>(null);
   const activationOrderRef = useRef(0);
-  const [clockWidth, setClockWidth] = useState(MIN_CLOCK_WIDTH);
+  const [fitClockWidth, setFitClockWidth] = useState(UNMEASURED_CLOCK_WIDTH);
+  const [zoomPercent, setZoomPercent] = useState(MIN_ZOOM_PERCENT);
   const [hoveredInterval, setHoveredInterval] = useState<ActiveInterval | null>(null);
   const [focusedInterval, setFocusedInterval] = useState<ActiveInterval | null>(null);
+  const clockWidth = Math.max(1, (fitClockWidth * zoomPercent) / 100);
+  const secondsPerPixel = axisDuration / 1000 / clockWidth;
+  const scaleText = formatSecondsPerPixel(secondsPerPixel);
+  const rowStyle: CSSProperties = {
+    ...baseRowStyle,
+    gridTemplateColumns: `${LABEL_COLUMN_WIDTH}px ${clockWidth}px`,
+    width: `${LABEL_COLUMN_WIDTH + clockWidth}px`,
+  };
   const connectedHoveredInterval = hoveredInterval?.trigger.isConnected ? hoveredInterval : null;
   const connectedFocusedInterval = focusedInterval?.trigger.isConnected ? focusedInterval : null;
   const activeInterval =
@@ -920,18 +942,77 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   }, []);
 
   useLayoutEffect(() => {
-    const clock = clockRef.current;
-    if (!clock) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
     const measure = (): void => {
-      const width = clock.getBoundingClientRect().width || clock.clientWidth || MIN_CLOCK_WIDTH;
-      setClockWidth(width);
+      // clientWidth excludes a visible vertical scrollbar, so Fit cannot create
+      // horizontal overflow merely because the lane list needs vertical scrolling.
+      const viewportWidth = viewport.clientWidth || viewport.getBoundingClientRect().width;
+      if (viewportWidth <= 0) return;
+      const nextFitClockWidth = Math.max(
+        1,
+        viewportWidth - LABEL_COLUMN_WIDTH - CANVAS_HORIZONTAL_PADDING * 2
+      );
+      if (fitClockWidth === nextFitClockWidth) return;
+      if (zoomPercent > MIN_ZOOM_PERCENT) {
+        const currentClockWidth = (fitClockWidth * zoomPercent) / 100;
+        pendingCenterRef.current = clamp(
+          (viewport.scrollLeft + fitClockWidth / 2) / Math.max(1, currentClockWidth),
+          0,
+          1
+        );
+      }
+      closeTooltip();
+      setFitClockWidth(nextFitClockWidth);
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
-    observer.observe(clock);
+    observer.observe(viewport);
     return () => observer.disconnect();
-  }, [swimlane]);
+  }, [closeTooltip, fitClockWidth, swimlane, zoomPercent]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    if (zoomPercent === MIN_ZOOM_PERCENT) {
+      viewport.scrollLeft = 0;
+      pendingCenterRef.current = null;
+      return;
+    }
+    const center = pendingCenterRef.current;
+    if (center === null) return;
+    viewport.scrollLeft = clamp(
+      center * clockWidth - fitClockWidth / 2,
+      0,
+      Math.max(0, clockWidth - fitClockWidth)
+    );
+    pendingCenterRef.current = null;
+  }, [clockWidth, fitClockWidth, zoomPercent]);
+
+  const setZoom = useCallback(
+    (nextZoomPercent: number): void => {
+      const viewport = viewportRef.current;
+      const clampedZoom = clamp(
+        Math.round(nextZoomPercent / ZOOM_STEP_PERCENT) * ZOOM_STEP_PERCENT,
+        MIN_ZOOM_PERCENT,
+        MAX_ZOOM_PERCENT
+      );
+      if (clampedZoom === zoomPercent) return;
+      if (viewport && clampedZoom > MIN_ZOOM_PERCENT) {
+        pendingCenterRef.current = clamp(
+          (viewport.scrollLeft + fitClockWidth / 2) / clockWidth,
+          0,
+          1
+        );
+      } else {
+        pendingCenterRef.current = null;
+      }
+      closeTooltip();
+      setZoomPercent(clampedZoom);
+    },
+    [clockWidth, closeTooltip, fitClockWidth, zoomPercent]
+  );
 
   useEffect(() => {
     if (!activeKey) return;
@@ -1035,15 +1116,108 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     <section
       aria-label="Session swimlane"
       data-testid="swimlane-surface"
-      className="absolute inset-0 overflow-y-auto"
-      style={{ backgroundColor: 'var(--color-surface)', paddingTop: '60px' }}
+      className="absolute inset-0"
+      style={{
+        backgroundColor: 'var(--color-surface)',
+        boxSizing: 'border-box',
+        display: 'flex',
+        flexDirection: 'column',
+        paddingTop: '60px',
+      }}
     >
-      <div data-testid="swimlane-horizontal-scroll" style={{ overflowX: 'auto', width: '100%' }}>
+      <div
+        aria-label="Swimlane horizontal zoom"
+        data-testid="swimlane-zoom-controls"
+        role="group"
+        style={{
+          alignItems: 'center',
+          borderBottom: '1px solid var(--color-border)',
+          boxSizing: 'border-box',
+          display: 'flex',
+          flex: '0 0 auto',
+          flexWrap: 'wrap',
+          fontSize: '11px',
+          gap: '8px',
+          minHeight: '36px',
+          minWidth: 0,
+          padding: '6px 12px',
+          width: '100%',
+        }}
+      >
+        <button
+          type="button"
+          aria-label="Fit swimlane to width"
+          className={zoomButtonClassName}
+          data-testid="swimlane-zoom-fit"
+          disabled={zoomPercent === MIN_ZOOM_PERCENT}
+          onClick={() => setZoom(MIN_ZOOM_PERCENT)}
+          style={{ minWidth: '44px' }}
+        >
+          Fit
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out swimlane"
+          className={zoomButtonClassName}
+          data-testid="swimlane-zoom-out"
+          disabled={zoomPercent === MIN_ZOOM_PERCENT}
+          onClick={() => setZoom(zoomPercent - ZOOM_STEP_PERCENT)}
+          style={{ minWidth: '32px' }}
+        >
+          −
+        </button>
+        <input
+          aria-describedby={scaleOutputId}
+          aria-label="Swimlane zoom percentage"
+          className="min-w-24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-emphasis"
+          data-testid="swimlane-zoom-range"
+          max={MAX_ZOOM_PERCENT}
+          min={MIN_ZOOM_PERCENT}
+          onChange={(event) => setZoom(Number(event.currentTarget.value))}
+          step={ZOOM_STEP_PERCENT}
+          style={{ flex: '1 1 140px' }}
+          type="range"
+          value={zoomPercent}
+        />
+        <button
+          type="button"
+          aria-label="Zoom in swimlane"
+          className={zoomButtonClassName}
+          data-testid="swimlane-zoom-in"
+          disabled={zoomPercent === MAX_ZOOM_PERCENT}
+          onClick={() => setZoom(zoomPercent + ZOOM_STEP_PERCENT)}
+          style={{ minWidth: '32px' }}
+        >
+          +
+        </button>
+        <output
+          data-seconds-per-pixel={secondsPerPixel}
+          data-testid="swimlane-zoom-output"
+          id={scaleOutputId}
+          style={{ flex: '0 1 auto', minWidth: 0, whiteSpace: 'nowrap' }}
+        >
+          {zoomPercent}% · {scaleText}
+        </output>
+      </div>
+      <div
+        ref={viewportRef}
+        aria-label="Swimlane timeline viewport"
+        data-testid="swimlane-horizontal-scroll"
+        role="region"
+        style={{
+          flex: '1 1 auto',
+          minHeight: 0,
+          overflowX: 'auto',
+          overflowY: 'auto',
+          width: '100%',
+        }}
+      >
         <div
           data-testid="swimlane-clock-canvas"
           style={{
-            minWidth: `${LABEL_COLUMN_WIDTH + MIN_CLOCK_WIDTH}px`,
-            padding: '8px 16px 18px',
+            boxSizing: 'border-box',
+            padding: `8px ${CANVAS_HORIZONTAL_PADDING}px 18px`,
+            width: `${LABEL_COLUMN_WIDTH + clockWidth + CANVAS_HORIZONTAL_PADDING * 2}px`,
           }}
         >
           <div data-testid="swimlane-axis" style={{ ...rowStyle, height: '28px' }}>
@@ -1095,7 +1269,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
             >
               Parent
             </div>
-            <div ref={clockRef} data-clock-width={clockWidth} style={clockStyle}>
+            <div data-clock-width={clockWidth} style={clockStyle}>
               <div aria-hidden="true" style={baseTrackStyle} />
               {visibleParentSegments.map((segment) => {
                 const intervalKey = intervalIdentity('parent', segment.id);
@@ -1231,7 +1405,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                     {displayedLabel}
                   </span>
                 </div>
-                <div style={clockStyle}>
+                <div data-clock-width={clockWidth} style={clockStyle}>
                   <div aria-hidden="true" style={baseTrackStyle} />
                   {row.activations
                     .filter(
