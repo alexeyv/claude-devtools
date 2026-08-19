@@ -21,6 +21,10 @@ let tooltipHeight = 180;
 let triggerLeft = 200;
 let triggerTop = 100;
 let viewportClientWidthOverride: number | undefined;
+let viewportClientHeightOverride: number | undefined;
+let viewportLeft = 0;
+let viewportTop = 0;
+let forceNullHitTest = false;
 
 class MeasuredResizeObserver {
   static instances: MeasuredResizeObserver[] = [];
@@ -218,6 +222,31 @@ async function mouseOut(target: HTMLElement): Promise<void> {
   await act(async () => target.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
 }
 
+async function mouseMove(target: HTMLElement, clientX: number, clientY: number): Promise<void> {
+  await act(async () =>
+    target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX, clientY }))
+  );
+}
+
+async function pointerMove(
+  target: HTMLElement,
+  clientX: number,
+  clientY: number,
+  pointerType = 'mouse'
+): Promise<void> {
+  const event = new PointerEvent('pointermove', { bubbles: true, clientX, clientY });
+  Object.defineProperty(event, 'pointerType', { configurable: true, value: pointerType });
+  await act(async () => target.dispatchEvent(event));
+}
+
+async function pointerLeave(target: HTMLElement): Promise<void> {
+  await act(async () =>
+    target.dispatchEvent(
+      new PointerEvent('pointerout', { bubbles: true, relatedTarget: document.body })
+    )
+  );
+}
+
 async function focus(target: HTMLElement): Promise<void> {
   await act(async () => target.focus());
 }
@@ -253,17 +282,53 @@ beforeEach(() => {
   triggerLeft = 200;
   triggerTop = 100;
   viewportClientWidthOverride = undefined;
+  viewportClientHeightOverride = undefined;
+  viewportLeft = 0;
+  viewportTop = 0;
+  forceNullHitTest = false;
   MeasuredResizeObserver.instances = [];
   vi.stubGlobal('ResizeObserver', MeasuredResizeObserver);
+  vi.stubGlobal('PointerEvent', MouseEvent);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
     if (this.dataset.testid === 'swimlane-tooltip') {
       return new DOMRect(0, 0, tooltipWidth, tooltipHeight);
     }
     if (this.dataset.testid === 'swimlane-horizontal-scroll') {
-      return new DOMRect(0, 0, clockWidth + 184 + 32, 300);
+      return new DOMRect(viewportLeft, viewportTop, clockWidth + 184 + 32, 300);
+    }
+    if (this.dataset.testid === 'swimlane-clock-canvas') {
+      const viewport = this.parentElement;
+      return new DOMRect(
+        viewportLeft - (viewport?.scrollLeft ?? 0),
+        viewportTop - (viewport?.scrollTop ?? 0),
+        Number.parseFloat(this.style.width) || clockWidth + 184 + 32,
+        138
+      );
     }
     if (this.dataset.clockWidth !== undefined) {
-      return new DOMRect(184, 80, Number(this.dataset.clockWidth), 34);
+      const viewport = this.closest<HTMLElement>('[data-testid="swimlane-horizontal-scroll"]');
+      const left = viewportLeft + 184 + 16 - (viewport?.scrollLeft ?? 0);
+      const scrollTop = viewport?.scrollTop ?? 0;
+      if (this.dataset.testid === 'swimlane-time-ruler') {
+        return new DOMRect(left, viewportTop + 8 - scrollTop, Number(this.dataset.clockWidth), 28);
+      }
+      if (this.dataset.testid === 'swimlane-parent-clock') {
+        return new DOMRect(left, viewportTop + 36 - scrollTop, Number(this.dataset.clockWidth), 34);
+      }
+      if (this.dataset.testid?.startsWith('swimlane-child-clock-')) {
+        const clocks = Array.from(
+          this.closest('[data-testid="swimlane-clock-canvas"]')?.querySelectorAll(
+            '[data-testid^="swimlane-child-clock-"]'
+          ) ?? []
+        );
+        return new DOMRect(
+          left,
+          viewportTop + 70 + clocks.indexOf(this) * 34 - scrollTop,
+          Number(this.dataset.clockWidth),
+          34
+        );
+      }
+      return new DOMRect(left, 36 - scrollTop, Number(this.dataset.clockWidth), 34);
     }
     if (this.dataset.testid?.endsWith('-duration')) {
       return new DOMRect(0, 0, (this.textContent?.length ?? 0) * 6, 12);
@@ -280,12 +345,36 @@ beforeEach(() => {
     }
     return new DOMRect(0, 0, 0, 0);
   });
+  vi.spyOn(document, 'elementFromPoint').mockImplementation((clientX, clientY) => {
+    if (forceNullHitTest) return null;
+    const regions = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-swimlane-clock-region="true"]')
+    );
+    return (
+      regions.find((region) => {
+        const rect = region.getBoundingClientRect();
+        return (
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY <= rect.bottom
+        );
+      }) ?? null
+    );
+  });
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function () {
     if (this.dataset.testid === 'swimlane-horizontal-scroll') {
       return viewportClientWidthOverride ?? clockWidth + 184 + 32;
     }
     return 0;
   });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function () {
+    if (this.dataset.testid === 'swimlane-horizontal-scroll') {
+      return viewportClientHeightOverride ?? 300;
+    }
+    return 0;
+  });
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
 });
@@ -379,6 +468,242 @@ describe('SwimlaneSurface', () => {
       expect(mark.dataset.clockPercentage).toBe(percentage);
       expect(mark.style.left).toBe(`calc(${percentage}% + 0px)`);
     }
+  });
+
+  it('maps ruler, interval, and empty-track pointer positions to one red elapsed cursor', async () => {
+    const host = await render(mixedModel());
+    const ruler = element(host, 'swimlane-time-ruler');
+
+    await mouseMove(ruler, 380, 20);
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    await pointerMove(ruler, 380, 20, 'pen');
+
+    const cursor = element(host, 'swimlane-hover-cursor');
+    const guide = element(host, 'swimlane-hover-guide');
+    const label = element(host, 'swimlane-hover-label');
+    expect(cursor.getAttribute('aria-hidden')).toBe('true');
+    expect(cursor.style.pointerEvents).toBe('none');
+    expect(cursor.style.left).toBe('200px');
+    expect(cursor.style.top).toBe('8px');
+    expect(cursor.style.height).toBe('130px');
+    expect(guide.style.left).toBe('180px');
+    expect(guide.style.backgroundColor).toBe('var(--error-highlight-ring)');
+    expect(guide.style.pointerEvents).toBe('none');
+    expect(label.textContent).toBe('2.50s');
+    expect(label.getAttribute('role')).toBeNull();
+
+    await pointerMove(element(host, 'swimlane-parent-segment-idle'), 560, 50);
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('360px');
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('5.00s');
+
+    await pointerMove(element(host, 'swimlane-child-clock-child'), 920, 80);
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('719px');
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('10.00s');
+    expect(
+      Number.parseFloat(cursor.style.left) +
+        Number.parseFloat(element(host, 'swimlane-hover-guide').style.left)
+    ).toBe(919);
+  });
+
+  it('hides the elapsed cursor immediately over labels, padding, and outside the viewport', async () => {
+    const model = mixedModel();
+    model.evidence = [
+      {
+        id: 'suppressed-hover-evidence',
+        type: 'tool-execution',
+        startTime: at(1),
+        endTime: at(1.001),
+        durationMs: 1,
+      },
+    ];
+    const host = await render(model);
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const parentClock = element(host, 'swimlane-parent-clock');
+
+    await pointerMove(parentClock, 400, 50);
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).not.toBeNull();
+
+    const parentLabel = element(host, 'swimlane-parent-row').firstElementChild as HTMLElement;
+    await pointerMove(parentLabel, 100, 50);
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    await pointerMove(parentClock, 400, 50);
+    await pointerMove(element(host, 'swimlane-clock-canvas'), 8, 120);
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    await pointerMove(parentClock, 400, 50);
+    await pointerMove(element(host, 'swimlane-suppressed-activity'), 400, 155);
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    await pointerMove(parentClock, 400, 50);
+    await pointerLeave(viewport);
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+  });
+
+  it('recomputes the elapsed cursor while zooming, scrolling, resizing, and ruler-panning', async () => {
+    const model = mixedModel();
+    const host = await render(model);
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const parentClock = element(host, 'swimlane-parent-clock');
+
+    await setRangeValue(range, 1);
+    await pointerMove(parentClock, 400, 50);
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('560px');
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('3.889s');
+
+    viewport.scrollLeft = 460;
+    await act(async () => viewport.dispatchEvent(new Event('scroll')));
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('660px');
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('4.583s');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 420 });
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    expect(element(host, 'swimlane-hover-label').style.left).toBe('344px');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    expect(element(host, 'swimlane-hover-label').style.left).toBe('408px');
+
+    clockWidth = 1000;
+    await triggerResizeObservers();
+    const resizedGuide = Number.parseFloat(element(host, 'swimlane-hover-guide').style.left);
+    const resizedCanvas = element(host, 'swimlane-clock-canvas').getBoundingClientRect();
+    const resizedCursor = element(host, 'swimlane-hover-cursor');
+    expect(
+      resizedCanvas.left + Number.parseFloat(resizedCursor.style.left) + resizedGuide
+    ).toBeCloseTo(400);
+
+    const ruler = element(host, 'swimlane-time-ruler');
+    await pointerMove(ruler, 400, 20);
+    const beforePan = viewport.scrollLeft;
+    await act(async () => {
+      ruler.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 400 }));
+      window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX: 350, clientY: 20 }));
+    });
+    expect(viewport.scrollLeft).toBe(beforePan + 50);
+    expect(Number.parseFloat(element(host, 'swimlane-hover-guide').style.left)).toBeCloseTo(
+      838.888889
+    );
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('4.194s');
+
+    await click(element(host, 'swimlane-zoom-fit'));
+    expect(range.value).toBe('0');
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('150px');
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('1.50s');
+
+    viewportClientHeightOverride = 40;
+    await triggerResizeObservers();
+    expect(element(host, 'swimlane-hover-label').style.top).toBe('20px');
+    viewportClientHeightOverride = 300;
+    await triggerResizeObservers();
+
+    viewportLeft = 20;
+    viewportTop = 10;
+    await act(async () => document.body.dispatchEvent(new Event('scroll')));
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('130px');
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('1.30s');
+    viewportLeft = 0;
+    viewportTop = 0;
+    await act(async () => window.dispatchEvent(new Event('scroll')));
+
+    viewport.scrollTop = 140;
+    await act(async () => viewport.dispatchEvent(new Event('scroll')));
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+  });
+
+  it('keeps zero-duration feedback finite and clamps its label inside a narrow viewport', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 240 });
+    const model = mixedModel();
+    model.endTime = model.startTime;
+    model.durationMs = 0;
+    model.parentSegments = [];
+    model.hitlMarks = [];
+    model.childRows = [];
+    const host = await render(model);
+
+    await pointerMove(element(host, 'swimlane-time-ruler'), 238, 20);
+
+    const label = element(host, 'swimlane-hover-label');
+    expect(label.textContent).toBe('0ms');
+    expect(label.textContent).not.toMatch(/NaN|Infinity/);
+    expect(label.style.left).toBe('200px');
+    expect(label.style.width).toBe('30px');
+    expect(Number.parseFloat(label.style.left)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('uses the client box around sticky labels and scrollbar gutters for label placement', async () => {
+    viewportClientWidthOverride = 800;
+    viewportClientHeightOverride = 100;
+    const host = await render(mixedModel());
+    const ruler = element(host, 'swimlane-time-ruler');
+
+    await pointerMove(ruler, 205, 10);
+    const topLabel = element(host, 'swimlane-hover-label');
+    expect(Number.parseFloat(topLabel.style.left)).toBeGreaterThanOrEqual(200);
+    expect(Number.parseFloat(topLabel.style.top)).toBe(18);
+
+    await pointerMove(ruler, 780, 20);
+    const gutterLabel = element(host, 'swimlane-hover-label');
+    expect(
+      Number.parseFloat(gutterLabel.style.left) + Number.parseFloat(gutterLabel.style.width)
+    ).toBeLessThanOrEqual(784);
+
+    await pointerMove(element(host, 'swimlane-child-clock-child'), 400, 95);
+    const bottomLabel = element(host, 'swimlane-hover-label');
+    expect(bottomLabel.style.top).toBe('67px');
+    expect(
+      Number.parseFloat(bottomLabel.style.top) + Number.parseFloat(bottomLabel.style.height)
+    ).toBeLessThanOrEqual(100);
+  });
+
+  it('clears stale pointer state on null hit tests, blur, visibility loss, and replacement', async () => {
+    const model = mixedModel();
+    const host = await render(model);
+    const parentClock = element(host, 'swimlane-parent-clock');
+
+    await pointerMove(parentClock, 400, 50);
+    forceNullHitTest = true;
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    forceNullHitTest = false;
+    await pointerMove(parentClock, 400, 50);
+    await act(async () => window.dispatchEvent(new Event('blur')));
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    await pointerMove(parentClock, 400, 50);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    await pointerMove(parentClock, 400, 50);
+    await rerender({ ...model, parentSegments: [...model.parentSegments] });
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+  });
+
+  it('keeps the hover cursor supplemental to interval details and target clicks', async () => {
+    const model = mixedModel();
+    const target = { kind: 'turn', groupId: 'hover-target' } as const;
+    model.parentSegments[0].target = target;
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const work = element(host, 'swimlane-parent-segment-work');
+
+    await pointerMove(work, 300, 50);
+    await mouseOver(work);
+
+    expect(element(host, 'swimlane-hover-cursor')).toBeTruthy();
+    expect(document.querySelectorAll('[role="tooltip"]')).toHaveLength(1);
+    const tooltip = element(document, 'swimlane-tooltip');
+    const hoverLabel = element(host, 'swimlane-hover-label');
+    expect(tooltip.textContent).toContain('Duration2.0s');
+    expect(Number(hoverLabel.style.zIndex)).toBeGreaterThan(Number(tooltip.style.zIndex));
+    expect(hoverLabel.style.pointerEvents).toBe('none');
+
+    await click(work);
+    expect(onTarget).toHaveBeenCalledWith(target);
   });
 
   it('fits the complete clock at 100% with accessible percentage feedback and two-axis overflow', async () => {

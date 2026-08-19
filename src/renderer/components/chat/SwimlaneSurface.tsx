@@ -11,19 +11,27 @@ import type {
   SwimlaneNavigationTarget,
   SwimlaneParentSegment,
 } from '@shared/types';
-import type { CSSProperties, FocusEvent, MouseEvent, RefObject } from 'react';
+import type {
+  CSSProperties,
+  FocusEvent,
+  MouseEvent,
+  PointerEvent as ReactPointerEvent,
+  RefObject,
+} from 'react';
 
 const LABEL_COLUMN_WIDTH = 184;
 const CANVAS_HORIZONTAL_PADDING = 16;
 const UNMEASURED_CLOCK_WIDTH = 720;
 const MIN_MEANINGFUL_INTERVAL_WIDTH = 1;
 const ROW_HEIGHT = 34;
+const RULER_HEIGHT = 28;
 const TRACK_INSET = 6;
 const LABEL_HORIZONTAL_PADDING = 8;
 const MAX_VISIBLE_DEPTH = 7;
 const DEPTH_INDENT = 12;
 const TOOLTIP_MARGIN = 8;
 const TOOLTIP_GAP = 6;
+const TOOLTIP_Z_INDEX = 99_999;
 const MIN_HITL_TICK_GAP = 3;
 const SUPPRESSED_DETAIL_LIMIT = 50;
 const MIN_ZOOM_LEVEL = 0;
@@ -32,6 +40,11 @@ const TARGET_RULER_TICK_COUNT = 10;
 const MAX_RULER_TICK_COUNT = 20;
 const ESTIMATED_RULER_CHARACTER_WIDTH = 6;
 const RULER_LABEL_GAP = 8;
+const HOVER_LABEL_GAP = 8;
+const HOVER_LABEL_HEIGHT = 20;
+const HOVER_LABEL_HORIZONTAL_PADDING = 6;
+const ESTIMATED_HOVER_CHARACTER_WIDTH = 6;
+const HOVER_LABEL_Z_INDEX = TOOLTIP_Z_INDEX + 1;
 const EVIDENCE_TYPES = [
   'assistant-output',
   'model-response',
@@ -57,6 +70,20 @@ interface ActiveInterval {
   identity: string;
   key: string;
   trigger: HTMLElement;
+}
+
+interface HoverCursor {
+  guideLeft: number;
+  label: string;
+  labelHeight: number;
+  labelLeft: number;
+  labelTop: number;
+  labelWidth: number;
+}
+
+interface PointerPosition {
+  clientX: number;
+  clientY: number;
 }
 
 interface SuppressedInterval {
@@ -1141,7 +1168,7 @@ function IntervalTooltip({
         top: position?.top ?? 0,
         visibility: position?.key === activeKey ? 'visible' : 'hidden',
         width: `${Math.max(0, Math.min(260, window.innerWidth - TOOLTIP_MARGIN * 2))}px`,
-        zIndex: 99999,
+        zIndex: TOOLTIP_Z_INDEX,
       }}
     >
       <div
@@ -1210,14 +1237,18 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   const scaleOutputId = `${tooltipId}-scale`;
   const rulerDescriptionId = `${tooltipId}-ruler-description`;
   const viewportRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const pendingCenterRef = useRef<number | null>(null);
   const rulerPanRef = useRef<{ clientX: number; scrollLeft: number } | null>(null);
+  const pointerPositionRef = useRef<PointerPosition | null>(null);
+  const pointerTargetRef = useRef<HTMLElement | null>(null);
   const activationOrderRef = useRef(0);
   const [fitClockWidth, setFitClockWidth] = useState(UNMEASURED_CLOCK_WIDTH);
   const [zoomLevel, setZoomLevel] = useState(MIN_ZOOM_LEVEL);
   const [viewportScrollLeft, setViewportScrollLeft] = useState(0);
   const [hoveredInterval, setHoveredInterval] = useState<ActiveInterval | null>(null);
   const [focusedInterval, setFocusedInterval] = useState<ActiveInterval | null>(null);
+  const [hoverCursor, setHoverCursor] = useState<HoverCursor | null>(null);
   const maxZoomLevel = maximumZoomLevel(axisDuration);
   const boundedZoomLevel = Math.min(zoomLevel, maxZoomLevel);
   const zoomFactor = 2 ** boundedZoomLevel;
@@ -1249,6 +1280,112 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     setFocusedInterval(null);
   }, []);
 
+  const recomputeHoverCursor = useCallback(
+    (position: PointerPosition, targetOverride?: EventTarget | null): void => {
+      const viewport = viewportRef.current;
+      const canvas = canvasRef.current;
+      if (!viewport || !canvas || !Number.isFinite(position.clientX + position.clientY)) {
+        setHoverCursor(null);
+        return;
+      }
+
+      const hitTarget =
+        targetOverride instanceof HTMLElement
+          ? targetOverride
+          : typeof document.elementFromPoint === 'function'
+            ? document.elementFromPoint(position.clientX, position.clientY)
+            : pointerTargetRef.current;
+      const clockRegion = hitTarget?.closest<HTMLElement>('[data-swimlane-clock-region="true"]');
+      if (!clockRegion || !canvas.contains(clockRegion)) {
+        setHoverCursor(null);
+        return;
+      }
+
+      const clockRect = clockRegion.getBoundingClientRect();
+      const insideClock =
+        position.clientX >= clockRect.left &&
+        position.clientX <= clockRect.right &&
+        position.clientY >= clockRect.top &&
+        position.clientY <= clockRect.bottom;
+      if (!insideClock || !Number.isFinite(clockRect.width) || clockRect.width <= 0) {
+        setHoverCursor(null);
+        return;
+      }
+
+      const elapsedPixel = clamp(position.clientX - clockRect.left, 0, clockRect.width);
+      const guideLeft = Math.min(elapsedPixel, Math.max(0, clockRect.width - 1));
+      const elapsedMs =
+        axisDuration > 0
+          ? clamp((elapsedPixel / clockRect.width) * axisDuration, 0, axisDuration)
+          : 0;
+      const clockResolutionMs = axisDuration > 0 ? axisDuration / clockRect.width : 1;
+      const label = formatElapsedTime(elapsedMs, clockResolutionMs);
+      const viewportRect = viewport.getBoundingClientRect();
+      const contentLeft = viewportRect.left + viewport.clientLeft;
+      const contentTop = viewportRect.top + viewport.clientTop;
+      const contentRight = contentLeft + Math.max(0, viewport.clientWidth);
+      const contentBottom = contentTop + Math.max(0, viewport.clientHeight);
+      const visibleLeft = Math.max(
+        0,
+        contentLeft + LABEL_COLUMN_WIDTH + CANVAS_HORIZONTAL_PADDING,
+        clockRect.left
+      );
+      const visibleRight = Math.min(window.innerWidth, contentRight, clockRect.right);
+      const visibleTop = Math.max(0, contentTop);
+      const visibleBottom = Math.min(window.innerHeight, contentBottom);
+      const availableWidth = Math.max(0, visibleRight - visibleLeft);
+      const availableHeight = Math.max(0, visibleBottom - visibleTop);
+      if (availableWidth <= 0 || availableHeight <= 0) {
+        setHoverCursor(null);
+        return;
+      }
+      const estimatedLabelWidth =
+        label.length * ESTIMATED_HOVER_CHARACTER_WIDTH + HOVER_LABEL_HORIZONTAL_PADDING * 2;
+      const labelWidth = Math.min(estimatedLabelWidth, availableWidth);
+      const labelHeight = Math.min(HOVER_LABEL_HEIGHT, availableHeight);
+      const spaceRight = visibleRight - (position.clientX + HOVER_LABEL_GAP);
+      const spaceLeft = position.clientX - HOVER_LABEL_GAP - visibleLeft;
+      const placeRight = spaceRight >= labelWidth || spaceRight >= spaceLeft;
+      const preferredLabelLeft = placeRight
+        ? position.clientX + HOVER_LABEL_GAP
+        : position.clientX - HOVER_LABEL_GAP - labelWidth;
+      const labelLeft = clamp(preferredLabelLeft, visibleLeft, visibleRight - labelWidth);
+      const spaceBelow = visibleBottom - (position.clientY + HOVER_LABEL_GAP);
+      const spaceAbove = position.clientY - HOVER_LABEL_GAP - visibleTop;
+      const placeBelow = spaceBelow >= labelHeight || spaceBelow >= spaceAbove;
+      const preferredLabelTop = placeBelow
+        ? position.clientY + HOVER_LABEL_GAP
+        : position.clientY - HOVER_LABEL_GAP - labelHeight;
+      const labelTop = clamp(preferredLabelTop, visibleTop, visibleBottom - labelHeight);
+
+      setHoverCursor({
+        guideLeft,
+        label,
+        labelHeight,
+        labelLeft,
+        labelTop,
+        labelWidth,
+      });
+    },
+    [axisDuration]
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      const position = { clientX: event.clientX, clientY: event.clientY };
+      pointerPositionRef.current = position;
+      pointerTargetRef.current = event.target instanceof HTMLElement ? event.target : null;
+      recomputeHoverCursor(position, event.target);
+    },
+    [recomputeHoverCursor]
+  );
+
+  const clearHoverCursor = useCallback((): void => {
+    pointerPositionRef.current = null;
+    pointerTargetRef.current = null;
+    setHoverCursor(null);
+  }, []);
+
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -1273,12 +1410,17 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       closeTooltip();
       setFitClockWidth(nextFitClockWidth);
     };
-    measure();
+    const measureAndRecompute = (): void => {
+      measure();
+      const position = pointerPositionRef.current;
+      if (position) recomputeHoverCursor(position);
+    };
+    measureAndRecompute();
     if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(measureAndRecompute);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [boundedZoomLevel, closeTooltip, fitClockWidth, swimlane]);
+  }, [boundedZoomLevel, closeTooltip, fitClockWidth, recomputeHoverCursor, swimlane]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -1299,6 +1441,31 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     viewport.dispatchEvent(new Event('scroll'));
     pendingCenterRef.current = null;
   }, [boundedZoomLevel, clockWidth, fitClockWidth]);
+
+  useLayoutEffect(() => {
+    const position = pointerPositionRef.current;
+    if (position) recomputeHoverCursor(position);
+  }, [clockWidth, recomputeHoverCursor, swimlane, viewportScrollLeft]);
+
+  useEffect(() => {
+    const recompute = (): void => {
+      const position = pointerPositionRef.current;
+      if (position) recomputeHoverCursor(position);
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === 'hidden') clearHoverCursor();
+    };
+    window.addEventListener('blur', clearHoverCursor);
+    window.addEventListener('resize', recompute);
+    window.addEventListener('scroll', recompute, true);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('blur', clearHoverCursor);
+      window.removeEventListener('resize', recompute);
+      window.removeEventListener('scroll', recompute, true);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [clearHoverCursor, recomputeHoverCursor]);
 
   const setZoom = useCallback(
     (nextZoomLevel: number): void => {
@@ -1350,6 +1517,9 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       );
       viewport.scrollLeft = nextScrollLeft;
       setViewportScrollLeft(nextScrollLeft);
+      const position = { clientX: event.clientX, clientY: event.clientY };
+      pointerPositionRef.current = position;
+      recomputeHoverCursor(position);
     };
     window.addEventListener('blur', stop);
     window.addEventListener('mousemove', pan);
@@ -1359,7 +1529,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       window.removeEventListener('mousemove', pan);
       window.removeEventListener('mouseup', stop);
     };
-  }, [clockWidth, fitClockWidth]);
+  }, [clockWidth, fitClockWidth, recomputeHoverCursor]);
 
   useEffect(() => {
     if (!activeKey) return;
@@ -1635,7 +1805,13 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         aria-describedby={rulerDescriptionId}
         aria-label="Swimlane timeline viewport"
         data-testid="swimlane-horizontal-scroll"
-        onScroll={(event) => setViewportScrollLeft(event.currentTarget.scrollLeft)}
+        onPointerLeave={clearHoverCursor}
+        onPointerMove={handlePointerMove}
+        onScroll={(event) => {
+          setViewportScrollLeft(event.currentTarget.scrollLeft);
+          const position = pointerPositionRef.current;
+          if (position) recomputeHoverCursor(position);
+        }}
         role="region"
         tabIndex={0}
         style={{
@@ -1647,10 +1823,12 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         }}
       >
         <div
+          ref={canvasRef}
           data-testid="swimlane-clock-canvas"
           style={{
             boxSizing: 'border-box',
             padding: `8px ${CANVAS_HORIZONTAL_PADDING}px 18px`,
+            position: 'relative',
             width: `${LABEL_COLUMN_WIDTH + clockWidth + CANVAS_HORIZONTAL_PADDING * 2}px`,
           }}
         >
@@ -1660,6 +1838,8 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
             </div>
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Dragging is optional; keyboard users scroll the focused viewport. */}
             <div
+              data-clock-width={clockWidth}
+              data-swimlane-clock-region="true"
               data-testid="swimlane-time-ruler"
               onMouseDown={beginRulerPan}
               style={{
@@ -1720,7 +1900,12 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
             >
               Parent
             </div>
-            <div data-clock-width={clockWidth} style={clockStyle}>
+            <div
+              data-clock-width={clockWidth}
+              data-swimlane-clock-region="true"
+              data-testid="swimlane-parent-clock"
+              style={clockStyle}
+            >
               <div aria-hidden="true" style={baseTrackStyle} />
               {visibleParentSegments.map((segment) => {
                 const intervalKey = intervalIdentity('parent', segment.id);
@@ -1856,7 +2041,12 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                     {displayedLabel}
                   </span>
                 </div>
-                <div data-clock-width={clockWidth} style={clockStyle}>
+                <div
+                  data-clock-width={clockWidth}
+                  data-swimlane-clock-region="true"
+                  data-testid={`swimlane-child-clock-${row.id}`}
+                  style={clockStyle}
+                >
                   <div aria-hidden="true" style={baseTrackStyle} />
                   {row.activations
                     .filter(
@@ -2071,6 +2261,60 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                 </div>
               )}
             </details>
+          )}
+          {hoverCursor && (
+            <div
+              aria-hidden="true"
+              data-testid="swimlane-hover-cursor"
+              style={{
+                height: `${RULER_HEIGHT + (swimlane.childRows.length + 1) * ROW_HEIGHT}px`,
+                left: `${CANVAS_HORIZONTAL_PADDING + LABEL_COLUMN_WIDTH}px`,
+                pointerEvents: 'none',
+                position: 'absolute',
+                top: '8px',
+                width: `${clockWidth}px`,
+              }}
+            >
+              <div
+                data-testid="swimlane-hover-guide"
+                style={{
+                  backgroundColor: 'var(--error-highlight-ring)',
+                  bottom: 0,
+                  left: `${hoverCursor.guideLeft}px`,
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  top: 0,
+                  width: '1px',
+                  zIndex: 5,
+                }}
+              />
+              <span
+                data-testid="swimlane-hover-label"
+                style={{
+                  backgroundColor: 'var(--color-surface-overlay)',
+                  border: '1px solid var(--error-highlight-ring)',
+                  borderRadius: '3px',
+                  boxSizing: 'border-box',
+                  color: 'var(--color-text)',
+                  fontSize: '10px',
+                  fontVariantNumeric: 'tabular-nums',
+                  height: `${hoverCursor.labelHeight}px`,
+                  left: `${hoverCursor.labelLeft}px`,
+                  lineHeight: `${Math.max(0, hoverCursor.labelHeight - 2)}px`,
+                  overflow: 'hidden',
+                  padding: `0 ${HOVER_LABEL_HORIZONTAL_PADDING}px`,
+                  pointerEvents: 'none',
+                  position: 'fixed',
+                  top: `${hoverCursor.labelTop}px`,
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  width: `${hoverCursor.labelWidth}px`,
+                  zIndex: HOVER_LABEL_Z_INDEX,
+                }}
+              >
+                {hoverCursor.label}
+              </span>
+            </div>
           )}
         </div>
       </div>
