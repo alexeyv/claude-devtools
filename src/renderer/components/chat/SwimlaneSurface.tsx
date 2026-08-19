@@ -44,7 +44,7 @@ const HOVER_LABEL_GAP = 8;
 const HOVER_LABEL_HEIGHT = 20;
 const HOVER_LABEL_HORIZONTAL_PADDING = 6;
 const ESTIMATED_HOVER_CHARACTER_WIDTH = 6;
-const HOVER_LABEL_Z_INDEX = TOOLTIP_Z_INDEX + 1;
+const HOVER_LABEL_Z_INDEX = 7;
 const EVIDENCE_TYPES = [
   'assistant-output',
   'model-response',
@@ -411,11 +411,7 @@ function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
             ? activation.segments.flatMap((segmentValue, segmentIndex) => {
                 const segment = runtimeRecord(segmentValue);
                 if (!segment || !isParentType(segment.type)) return [];
-                const segmentInterval = clippedInterval(
-                  segment,
-                  activationStart,
-                  activationEnd
-                );
+                const segmentInterval = clippedInterval(segment, activationStart, activationEnd);
                 if (!segmentInterval) return [];
                 const segmentMetrics = runtimeMetrics(segment.metrics);
                 const rawEvidenceId = runtimeNonblankString(segment.evidenceId);
@@ -520,8 +516,7 @@ function decimalPlacesForStep(stepMs: number): number {
   return 0;
 }
 
-function formattedSeconds(milliseconds: number, stepMs: number): string {
-  const precision = decimalPlacesForStep(stepMs);
+function formattedSeconds(milliseconds: number, precision: number): string {
   const seconds = milliseconds / 1000;
   return precision > 0 ? seconds.toFixed(precision) : String(Math.round(seconds));
 }
@@ -530,14 +525,18 @@ function formatElapsedTime(elapsedMs: number, stepMs: number): string {
   const normalizedElapsed = Math.max(0, Math.round(elapsedMs * 1000) / 1000);
   if (normalizedElapsed < 1000) {
     const precision = stepMs < 1 ? Math.min(3, Math.max(0, Math.ceil(-Math.log10(stepMs)))) : 0;
-    return `${normalizedElapsed.toFixed(precision)}ms`;
+    const roundedMilliseconds = Number(normalizedElapsed.toFixed(precision));
+    if (roundedMilliseconds < 1000) return `${roundedMilliseconds.toFixed(precision)}ms`;
   }
 
-  const wholeHours = Math.floor(normalizedElapsed / 3_600_000);
-  const afterHours = normalizedElapsed - wholeHours * 3_600_000;
+  const secondsPrecision = decimalPlacesForStep(stepMs);
+  const roundingIncrementMs = 1000 / 10 ** secondsPrecision;
+  const roundedElapsed = Math.round(normalizedElapsed / roundingIncrementMs) * roundingIncrementMs;
+  const wholeHours = Math.floor(roundedElapsed / 3_600_000);
+  const afterHours = roundedElapsed - wholeHours * 3_600_000;
   const wholeMinutes = Math.floor(afterHours / 60_000);
   const afterMinutes = afterHours - wholeMinutes * 60_000;
-  const seconds = formattedSeconds(afterMinutes, stepMs);
+  const seconds = formattedSeconds(afterMinutes, secondsPrecision);
 
   if (wholeHours > 0) {
     if (wholeMinutes === 0 && afterMinutes === 0) return `${wholeHours}h`;
@@ -548,7 +547,7 @@ function formatElapsedTime(elapsedMs: number, stepMs: number): string {
     if (afterMinutes === 0) return `${wholeMinutes}m`;
     return `${wholeMinutes}m ${seconds}s`;
   }
-  return `${formattedSeconds(normalizedElapsed, stepMs)}s`;
+  return `${formattedSeconds(roundedElapsed, secondsPrecision)}s`;
 }
 
 function powerOfTenNiceStep(targetMs: number): number {
@@ -1240,6 +1239,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   const canvasRef = useRef<HTMLDivElement>(null);
   const pendingCenterRef = useRef<number | null>(null);
   const rulerPanRef = useRef<{ clientX: number; scrollLeft: number } | null>(null);
+  const hoverFrameRef = useRef<number | null>(null);
   const pointerPositionRef = useRef<PointerPosition | null>(null);
   const pointerTargetRef = useRef<HTMLElement | null>(null);
   const activationOrderRef = useRef(0);
@@ -1280,12 +1280,22 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     setFocusedInterval(null);
   }, []);
 
+  const clearHoverCursor = useCallback((): void => {
+    if (hoverFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(hoverFrameRef.current);
+    }
+    hoverFrameRef.current = null;
+    pointerPositionRef.current = null;
+    pointerTargetRef.current = null;
+    setHoverCursor(null);
+  }, []);
+
   const recomputeHoverCursor = useCallback(
     (position: PointerPosition, targetOverride?: EventTarget | null): void => {
       const viewport = viewportRef.current;
       const canvas = canvasRef.current;
       if (!viewport || !canvas || !Number.isFinite(position.clientX + position.clientY)) {
-        setHoverCursor(null);
+        clearHoverCursor();
         return;
       }
 
@@ -1297,7 +1307,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
             : pointerTargetRef.current;
       const clockRegion = hitTarget?.closest<HTMLElement>('[data-swimlane-clock-region="true"]');
       if (!clockRegion || !canvas.contains(clockRegion)) {
-        setHoverCursor(null);
+        clearHoverCursor();
         return;
       }
 
@@ -1308,7 +1318,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         position.clientY >= clockRect.top &&
         position.clientY <= clockRect.bottom;
       if (!insideClock || !Number.isFinite(clockRect.width) || clockRect.width <= 0) {
-        setHoverCursor(null);
+        clearHoverCursor();
         return;
       }
 
@@ -1336,55 +1346,109 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       const availableWidth = Math.max(0, visibleRight - visibleLeft);
       const availableHeight = Math.max(0, visibleBottom - visibleTop);
       if (availableWidth <= 0 || availableHeight <= 0) {
-        setHoverCursor(null);
+        clearHoverCursor();
         return;
       }
       const estimatedLabelWidth =
         label.length * ESTIMATED_HOVER_CHARACTER_WIDTH + HOVER_LABEL_HORIZONTAL_PADDING * 2;
       const labelWidth = Math.min(estimatedLabelWidth, availableWidth);
       const labelHeight = Math.min(HOVER_LABEL_HEIGHT, availableHeight);
-      const spaceRight = visibleRight - (position.clientX + HOVER_LABEL_GAP);
-      const spaceLeft = position.clientX - HOVER_LABEL_GAP - visibleLeft;
-      const placeRight = spaceRight >= labelWidth || spaceRight >= spaceLeft;
-      const preferredLabelLeft = placeRight
-        ? position.clientX + HOVER_LABEL_GAP
-        : position.clientX - HOVER_LABEL_GAP - labelWidth;
-      const labelLeft = clamp(preferredLabelLeft, visibleLeft, visibleRight - labelWidth);
-      const spaceBelow = visibleBottom - (position.clientY + HOVER_LABEL_GAP);
-      const spaceAbove = position.clientY - HOVER_LABEL_GAP - visibleTop;
-      const placeBelow = spaceBelow >= labelHeight || spaceBelow >= spaceAbove;
-      const preferredLabelTop = placeBelow
-        ? position.clientY + HOVER_LABEL_GAP
-        : position.clientY - HOVER_LABEL_GAP - labelHeight;
-      const labelTop = clamp(preferredLabelTop, visibleTop, visibleBottom - labelHeight);
+      const right = clamp(
+        position.clientX + HOVER_LABEL_GAP,
+        visibleLeft,
+        visibleRight - labelWidth
+      );
+      const left = clamp(
+        position.clientX - HOVER_LABEL_GAP - labelWidth,
+        visibleLeft,
+        visibleRight - labelWidth
+      );
+      const below = clamp(
+        position.clientY + HOVER_LABEL_GAP,
+        visibleTop,
+        visibleBottom - labelHeight
+      );
+      const above = clamp(
+        position.clientY - HOVER_LABEL_GAP - labelHeight,
+        visibleTop,
+        visibleBottom - labelHeight
+      );
+      const horizontalCandidates =
+        visibleRight - position.clientX >= position.clientX - visibleLeft
+          ? [right, left]
+          : [left, right];
+      const verticalCandidates =
+        visibleBottom - position.clientY >= position.clientY - visibleTop
+          ? [below, above]
+          : [above, below];
+      const candidates = verticalCandidates.flatMap((top) =>
+        horizontalCandidates.map((candidateLeft) => ({ left: candidateLeft, top }))
+      );
+      const tooltip = document.getElementById(tooltipId);
+      const tooltipRect =
+        tooltip && tooltip.style.visibility !== 'hidden' ? tooltip.getBoundingClientRect() : null;
+      const overlapsTooltip = ({
+        left: candidateLeft,
+        top,
+      }: {
+        left: number;
+        top: number;
+      }): boolean =>
+        tooltipRect !== null &&
+        candidateLeft < tooltipRect.right &&
+        candidateLeft + labelWidth > tooltipRect.left &&
+        top < tooltipRect.bottom &&
+        top + labelHeight > tooltipRect.top;
+      const placement =
+        candidates.find((candidate) => !overlapsTooltip(candidate)) ?? candidates[0];
 
       setHoverCursor({
         guideLeft,
         label,
         labelHeight,
-        labelLeft,
-        labelTop,
+        labelLeft: placement.left,
+        labelTop: placement.top,
         labelWidth,
       });
     },
-    [axisDuration]
+    [axisDuration, clearHoverCursor, tooltipId]
   );
+
+  const recomputeStoredHoverCursor = useCallback((): void => {
+    if (hoverFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(hoverFrameRef.current);
+    }
+    hoverFrameRef.current = null;
+    const position = pointerPositionRef.current;
+    if (position) recomputeHoverCursor(position);
+  }, [recomputeHoverCursor]);
+
+  const scheduleHoverCursorRecompute = useCallback((): void => {
+    if (hoverFrameRef.current !== null) return;
+    if (typeof requestAnimationFrame !== 'function') {
+      recomputeStoredHoverCursor();
+      return;
+    }
+    hoverFrameRef.current = requestAnimationFrame(() => {
+      hoverFrameRef.current = null;
+      const position = pointerPositionRef.current;
+      if (position) recomputeHoverCursor(position);
+    });
+  }, [recomputeHoverCursor, recomputeStoredHoverCursor]);
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (event.pointerType === 'touch') {
+        clearHoverCursor();
+        return;
+      }
       const position = { clientX: event.clientX, clientY: event.clientY };
       pointerPositionRef.current = position;
       pointerTargetRef.current = event.target instanceof HTMLElement ? event.target : null;
-      recomputeHoverCursor(position, event.target);
+      scheduleHoverCursorRecompute();
     },
-    [recomputeHoverCursor]
+    [clearHoverCursor, scheduleHoverCursorRecompute]
   );
-
-  const clearHoverCursor = useCallback((): void => {
-    pointerPositionRef.current = null;
-    pointerTargetRef.current = null;
-    setHoverCursor(null);
-  }, []);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -1412,15 +1476,14 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
     };
     const measureAndRecompute = (): void => {
       measure();
-      const position = pointerPositionRef.current;
-      if (position) recomputeHoverCursor(position);
+      recomputeStoredHoverCursor();
     };
     measureAndRecompute();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measureAndRecompute);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [boundedZoomLevel, closeTooltip, fitClockWidth, recomputeHoverCursor, swimlane]);
+  }, [boundedZoomLevel, closeTooltip, fitClockWidth, recomputeStoredHoverCursor, swimlane]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -1443,29 +1506,43 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
   }, [boundedZoomLevel, clockWidth, fitClockWidth]);
 
   useLayoutEffect(() => {
-    const position = pointerPositionRef.current;
-    if (position) recomputeHoverCursor(position);
-  }, [clockWidth, recomputeHoverCursor, swimlane, viewportScrollLeft]);
+    recomputeStoredHoverCursor();
+  }, [clockWidth, recomputeStoredHoverCursor, swimlane]);
+
+  useLayoutEffect(() => {
+    if (pointerPositionRef.current) scheduleHoverCursorRecompute();
+  }, [activeKey, scheduleHoverCursorRecompute]);
 
   useEffect(() => {
-    const recompute = (): void => {
-      const position = pointerPositionRef.current;
-      if (position) recomputeHoverCursor(position);
+    const handleCapturedScroll = (event: Event): void => {
+      if (event.target !== viewportRef.current) recomputeStoredHoverCursor();
     };
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') clearHoverCursor();
     };
     window.addEventListener('blur', clearHoverCursor);
-    window.addEventListener('resize', recompute);
-    window.addEventListener('scroll', recompute, true);
+    window.addEventListener('resize', recomputeStoredHoverCursor);
+    window.addEventListener('scroll', handleCapturedScroll, true);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       window.removeEventListener('blur', clearHoverCursor);
-      window.removeEventListener('resize', recompute);
-      window.removeEventListener('scroll', recompute, true);
+      window.removeEventListener('resize', recomputeStoredHoverCursor);
+      window.removeEventListener('scroll', handleCapturedScroll, true);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [clearHoverCursor, recomputeHoverCursor]);
+  }, [clearHoverCursor, recomputeStoredHoverCursor]);
+
+  useEffect(
+    () => () => {
+      if (hoverFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(hoverFrameRef.current);
+      }
+      hoverFrameRef.current = null;
+      pointerPositionRef.current = null;
+      pointerTargetRef.current = null;
+    },
+    []
+  );
 
   const setZoom = useCallback(
     (nextZoomLevel: number): void => {
@@ -1519,7 +1596,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       setViewportScrollLeft(nextScrollLeft);
       const position = { clientX: event.clientX, clientY: event.clientY };
       pointerPositionRef.current = position;
-      recomputeHoverCursor(position);
+      recomputeStoredHoverCursor();
     };
     window.addEventListener('blur', stop);
     window.addEventListener('mousemove', pan);
@@ -1529,7 +1606,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       window.removeEventListener('mousemove', pan);
       window.removeEventListener('mouseup', stop);
     };
-  }, [clockWidth, fitClockWidth, recomputeHoverCursor]);
+  }, [clockWidth, fitClockWidth, recomputeStoredHoverCursor]);
 
   useEffect(() => {
     if (!activeKey) return;
@@ -1805,12 +1882,12 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         aria-describedby={rulerDescriptionId}
         aria-label="Swimlane timeline viewport"
         data-testid="swimlane-horizontal-scroll"
+        onPointerCancel={clearHoverCursor}
         onPointerLeave={clearHoverCursor}
         onPointerMove={handlePointerMove}
         onScroll={(event) => {
           setViewportScrollLeft(event.currentTarget.scrollLeft);
-          const position = pointerPositionRef.current;
-          if (position) recomputeHoverCursor(position);
+          recomputeStoredHoverCursor();
         }}
         role="region"
         tabIndex={0}
