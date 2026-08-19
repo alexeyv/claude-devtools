@@ -43,7 +43,17 @@ const RULER_LABEL_GAP = 8;
 const HOVER_LABEL_GAP = 8;
 const HOVER_LABEL_HEIGHT = 20;
 const HOVER_LABEL_HORIZONTAL_PADDING = 6;
-const ESTIMATED_HOVER_CHARACTER_WIDTH = 6;
+const HOVER_LABEL_BORDER_WIDTH = 1;
+const HOVER_LABEL_FONT_SIZE = 10;
+const HOVER_LABEL_WIDTH_SLACK = 1;
+const FALLBACK_HOVER_CHARACTER_EM_WIDTH = 0.62;
+const HOVER_CHARACTER_EM_WIDTHS: Record<string, number> = {
+  ' ': 0.3,
+  '.': 0.32,
+  h: 0.62,
+  m: 0.92,
+  s: 0.54,
+};
 const HOVER_LABEL_Z_INDEX = 7;
 const EVIDENCE_TYPES = [
   'assistant-output',
@@ -548,6 +558,60 @@ function formatElapsedTime(elapsedMs: number, stepMs: number): string {
     return `${wholeMinutes}m ${seconds}s`;
   }
   return `${formattedSeconds(roundedElapsed, secondsPrecision)}s`;
+}
+
+let hoverLabelRuler: HTMLElement | null | undefined;
+
+// Measured in the DOM rather than on a canvas so the label's inherited font
+// stack and tabular figures are honoured; canvas measureText ignores both.
+function hoverLabelRulerElement(): HTMLElement | null {
+  if (hoverLabelRuler === undefined) {
+    try {
+      const ruler = document.createElement('span');
+      ruler.setAttribute('aria-hidden', 'true');
+      ruler.style.cssText = [
+        'position:absolute',
+        'left:-9999px',
+        'top:0',
+        'visibility:hidden',
+        'pointer-events:none',
+        'white-space:pre',
+        'padding:0',
+        'border:0',
+        `font-size:${HOVER_LABEL_FONT_SIZE}px`,
+        'font-variant-numeric:tabular-nums',
+      ].join(';');
+      document.body.appendChild(ruler);
+      hoverLabelRuler = ruler;
+    } catch {
+      hoverLabelRuler = null;
+    }
+  }
+  return hoverLabelRuler ?? null;
+}
+
+function estimatedHoverTextWidth(label: string): number {
+  let ems = 0;
+  for (const character of label) {
+    ems += HOVER_CHARACTER_EM_WIDTHS[character] ?? FALLBACK_HOVER_CHARACTER_EM_WIDTH;
+  }
+  return ems * HOVER_LABEL_FONT_SIZE;
+}
+
+function hoverLabelWidth(label: string): number {
+  let textWidth = estimatedHoverTextWidth(label);
+  const ruler = hoverLabelRulerElement();
+  if (ruler) {
+    ruler.textContent = label;
+    const measured = ruler.getBoundingClientRect().width;
+    if (Number.isFinite(measured) && measured > 0) textWidth = measured;
+  }
+  return Math.ceil(
+    textWidth +
+      HOVER_LABEL_HORIZONTAL_PADDING * 2 +
+      HOVER_LABEL_BORDER_WIDTH * 2 +
+      HOVER_LABEL_WIDTH_SLACK
+  );
 }
 
 function powerOfTenNiceStep(targetMs: number): number {
@@ -1349,9 +1413,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
         clearHoverCursor();
         return;
       }
-      const estimatedLabelWidth =
-        label.length * ESTIMATED_HOVER_CHARACTER_WIDTH + HOVER_LABEL_HORIZONTAL_PADDING * 2;
-      const labelWidth = Math.min(estimatedLabelWidth, availableWidth);
+      const labelWidth = Math.min(hoverLabelWidth(label), availableWidth);
       const labelHeight = Math.min(HOVER_LABEL_HEIGHT, availableHeight);
       const right = clamp(
         position.clientX + HOVER_LABEL_GAP,
@@ -2369,15 +2431,15 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
                 data-testid="swimlane-hover-label"
                 style={{
                   backgroundColor: 'var(--color-surface-overlay)',
-                  border: '1px solid var(--error-highlight-ring)',
+                  border: `${HOVER_LABEL_BORDER_WIDTH}px solid var(--error-highlight-ring)`,
                   borderRadius: '3px',
                   boxSizing: 'border-box',
                   color: 'var(--color-text)',
-                  fontSize: '10px',
+                  fontSize: `${HOVER_LABEL_FONT_SIZE}px`,
                   fontVariantNumeric: 'tabular-nums',
                   height: `${hoverCursor.labelHeight}px`,
                   left: `${hoverCursor.labelLeft}px`,
-                  lineHeight: `${Math.max(0, hoverCursor.labelHeight - 2)}px`,
+                  lineHeight: `${Math.max(0, hoverCursor.labelHeight - HOVER_LABEL_BORDER_WIDTH * 2)}px`,
                   overflow: 'hidden',
                   padding: `0 ${HOVER_LABEL_HORIZONTAL_PADDING}px`,
                   pointerEvents: 'none',

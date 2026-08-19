@@ -636,7 +636,7 @@ describe('SwimlaneSurface', () => {
 
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 420 });
     await act(async () => window.dispatchEvent(new Event('resize')));
-    expect(element(host, 'swimlane-hover-label').style.left).toBe('344px');
+    expect(element(host, 'swimlane-hover-label').style.left).toBe('343px');
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
     await act(async () => window.dispatchEvent(new Event('resize')));
     expect(element(host, 'swimlane-hover-label').style.left).toBe('408px');
@@ -706,7 +706,10 @@ describe('SwimlaneSurface', () => {
     expect(label.textContent).toBe('0ms');
     expect(label.textContent).not.toMatch(/NaN|Infinity/);
     expect(label.style.left).toBe('200px');
-    expect(label.style.width).toBe('30px');
+    expect(label.style.width).toBe('36px');
+    expect(Number.parseFloat(label.style.width)).toBeGreaterThan(
+      label.textContent!.length * 6 + 12
+    );
     expect(Number.parseFloat(label.style.left)).toBeGreaterThanOrEqual(0);
   });
 
