@@ -23,7 +23,11 @@ import { totalmem } from 'os';
 import { join } from 'path';
 
 import { initializeIpcHandlers, removeIpcHandlers } from './ipc/handlers';
+import { parseCliArgs } from './utils/cliArgs';
 import { getProjectsBasePath, getTodosBasePath } from './utils/pathDecoder';
+import { resolveLaunchTarget } from './utils/sessionLaunchTarget';
+
+import type { SessionLaunchTarget } from '@shared/types/api';
 
 // Dynamic renderer heap limit — proportional to system RAM so low-end devices
 // are not starved.  50% of total RAM, clamped to [2 GB, 4 GB].
@@ -31,6 +35,14 @@ import { getProjectsBasePath, getTodosBasePath } from './utils/pathDecoder';
 const totalMB = Math.floor(totalmem() / (1024 * 1024));
 const heapMB = Math.min(4096, Math.max(2048, Math.floor(totalMB * 0.5)));
 app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${heapMB}`);
+
+// Single instance: a second `claude-devtools --session <id>` should surface the
+// session in the running window instead of starting a rival instance.
+// Electron forwards the second process's argv to the 'second-instance' event.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 // Window icon path for non-mac platforms.
 const getWindowIconPath = (): string | undefined => {
@@ -57,6 +69,8 @@ const CONTEXT_CHANGED = 'context:changed';
 const HTTP_SERVER_START = 'httpServer:start';
 const HTTP_SERVER_STOP = 'httpServer:stop';
 const HTTP_SERVER_GET_STATUS = 'httpServer:getStatus';
+const SESSION_GET_LAUNCH_TARGET = 'session:getLaunchTarget';
+const SESSION_OPEN_REQUEST = 'session:openRequest';
 
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled promise rejection in main process:', reason);
@@ -83,6 +97,13 @@ import {
 // =============================================================================
 
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * Session requested via `--session`, still being resolved.
+ * Consumed once by the renderer when it finishes booting; null when there is
+ * nothing pending.
+ */
+let pendingLaunchTarget: Promise<SessionLaunchTarget | null> | null = null;
 
 // Service registry and global services
 let contextRegistry: ServiceContextRegistry;
@@ -242,6 +263,62 @@ function reconfigureLocalContextForClaudeRoot(): void {
 }
 
 /**
+ * Resolves `--session` / `--project` arguments into an openable session.
+ * Never throws: unusable arguments resolve to null and startup continues normally.
+ *
+ * @param argv - argv of the launching process
+ * @returns The session to open, or null when none was requested or found
+ */
+async function resolveLaunchTargetFromArgv(argv: string[]): Promise<SessionLaunchTarget | null> {
+  try {
+    const args = parseCliArgs(argv);
+    if (!args.sessionId) {
+      return null;
+    }
+    return await resolveLaunchTarget(contextRegistry.getActive().projectScanner, args);
+  } catch (error) {
+    logger.error('Failed to resolve session from command line:', error);
+    return null;
+  }
+}
+
+/**
+ * Brings the existing window to the front, recreating it if it was closed
+ * (macOS keeps the app alive with no windows).
+ */
+function focusMainWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  createWindow();
+}
+
+/**
+ * Handles a second launch of the app: focuses the running window and opens the
+ * session its command line asked for, instead of starting another instance.
+ */
+async function handleSecondInstance(argv: string[]): Promise<void> {
+  const hadWindow = !!mainWindow && !mainWindow.isDestroyed();
+  const targetPromise = resolveLaunchTargetFromArgv(argv);
+
+  if (!hadWindow) {
+    // A fresh window pulls the target itself once its renderer boots.
+    pendingLaunchTarget = targetPromise;
+  }
+  focusMainWindow();
+
+  const target = await targetPromise;
+  if (hadWindow && target && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(SESSION_OPEN_REQUEST, target);
+  }
+}
+
+/**
  * Initializes all services.
  */
 function initializeServices(): void {
@@ -329,6 +406,19 @@ function initializeServices(): void {
 
   ipcMain.handle(HTTP_SERVER_GET_STATUS, () => {
     return { success: true, data: { running: httpServer.isRunning(), port: httpServer.getPort() } };
+  });
+
+  // Session requested via `--session` on the command line. Consumed once by the
+  // renderer during startup; returns null when nothing (valid) was requested.
+  ipcMain.handle(SESSION_GET_LAUNCH_TARGET, async () => {
+    const pending = pendingLaunchTarget;
+    pendingLaunchTarget = null;
+    try {
+      return pending ? await pending : null;
+    } catch (error) {
+      logger.error('Failed to resolve pending launch session:', error);
+      return null;
+    }
   });
 
   // Forward SSH state changes to renderer and HTTP SSE clients
@@ -577,6 +667,11 @@ function createWindow(): void {
  * Application ready handler.
  */
 void app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) {
+    // Another instance owns the session; this process is already quitting.
+    return;
+  }
+
   logger.info('App ready, initializing...');
   try {
     // Wait for config to finish loading from disk before using it
@@ -584,6 +679,10 @@ void app.whenReady().then(async () => {
 
     // Initialize services first
     initializeServices();
+
+    // Start resolving `--session` while the window boots; the renderer picks
+    // the result up via SESSION_GET_LAUNCH_TARGET once it is ready.
+    pendingLaunchTarget = resolveLaunchTargetFromArgv(process.argv);
 
     // Apply configuration settings
     const config = configManager.getConfig();
@@ -627,6 +726,13 @@ void app.whenReady().then(async () => {
 });
 
 /**
+ * Second launch handler - forwards the new command line to the running window.
+ */
+app.on('second-instance', (_event, argv) => {
+  void handleSecondInstance(argv);
+});
+
+/**
  * All windows closed handler.
  */
 app.on('window-all-closed', () => {
@@ -639,5 +745,7 @@ app.on('window-all-closed', () => {
  * Before quit handler - cleanup.
  */
 app.on('before-quit', () => {
-  shutdownServices();
+  if (hasSingleInstanceLock) {
+    shutdownServices();
+  }
 });

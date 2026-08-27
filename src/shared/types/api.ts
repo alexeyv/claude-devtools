@@ -152,10 +152,29 @@ export interface WslClaudeRootCandidate {
 // =============================================================================
 
 /**
+ * A session addressed by the (projectId, sessionId) pair it is stored under.
+ * Produced by the `--session` command-line flag.
+ */
+export interface SessionLaunchTarget {
+  projectId: string;
+  sessionId: string;
+}
+
+/**
  * Session navigation API exposed via preload.
  */
 export interface SessionAPI {
   scrollToLine: (sessionId: string, lineNumber: number) => Promise<void>;
+  /**
+   * Session requested via `--session` on the command line, or null when none
+   * was requested. Consumed once: later calls return null.
+   */
+  getLaunchTarget: () => Promise<SessionLaunchTarget | null>;
+  /**
+   * Fires when a second app instance is launched with `--session`, so the
+   * existing window opens it instead of a new instance starting.
+   */
+  onOpenRequest: (callback: (target: SessionLaunchTarget) => void) => () => void;
 }
 
 // =============================================================================
