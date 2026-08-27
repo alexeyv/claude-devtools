@@ -29,30 +29,48 @@ export interface CliArgs {
   projectId?: string;
 }
 
+const isSessionIdValue = (value: string): boolean => validateSessionId(value).valid;
+const isProjectIdValue = (value: string): boolean => validateProjectId(value).valid;
+
+/** Whether argv carries the flag at all, with or without an attached value. */
+function hasFlag(argv: readonly string[], flag: string): boolean {
+  return argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+
 /**
- * Reads the value of `--flag value` or `--flag=value` from an argv array.
- * Returns null when the flag is absent or has no usable value.
+ * Reads the value belonging to a flag.
+ *
+ * `--flag=value` is unambiguous and is taken as-is. For `--flag value` the
+ * value is not always adjacent: Chromium re-serializes a second instance's
+ * command line before Electron hands it to the 'second-instance' event, moving
+ * switches to the front and plain values to the back, so `--session <id>`
+ * arrives as a bare `--session` plus a trailing `<id>`. Scanning forward for
+ * the first argument that validates recovers both layouts — executable paths
+ * and other switches fail validation, so they are skipped.
+ *
+ * @returns The value, or null when the flag is absent or carries nothing usable
  */
-function readFlagValue(argv: readonly string[], flag: string): string | null {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+function readFlagValue(
+  argv: readonly string[],
+  flag: string,
+  isValid: (value: string) => boolean
+): string | null {
+  const index = argv.findIndex((arg) => arg === flag || arg.startsWith(`${flag}=`));
+  if (index === -1) {
+    return null;
+  }
 
-    if (arg === flag) {
-      const hasValue = i + 1 < argv.length && !argv[i + 1].startsWith('--');
-      if (!hasValue) {
-        logger.warn(`${flag} requires a value - ignoring`);
-        return null;
-      }
-      return argv[i + 1];
-    }
+  const flagArg = argv[index];
+  if (flagArg.startsWith(`${flag}=`)) {
+    // An explicit value is never guessed at: it is used or rejected.
+    const value = flagArg.slice(flag.length + 1).trim();
+    return isValid(value) ? value : null;
+  }
 
-    if (arg.startsWith(`${flag}=`)) {
-      const value = arg.slice(flag.length + 1);
-      if (value.length === 0) {
-        logger.warn(`${flag} requires a value - ignoring`);
-        return null;
-      }
-      return value;
+  for (let i = index + 1; i < argv.length; i++) {
+    const candidate = argv[i].trim();
+    if (isValid(candidate)) {
+      return candidate;
     }
   }
 
@@ -63,34 +81,32 @@ function readFlagValue(argv: readonly string[], flag: string): string | null {
  * Parses launch arguments out of an argv array.
  *
  * Electron's own leading arguments (executable path, app path, Chromium
- * switches) are harmless here because only values following a known flag are
+ * switches) are harmless here because only values that validate as ids are
  * consumed.
  *
- * @param argv - Raw argv, e.g. `process.argv`
+ * @param argv - Raw argv, e.g. `process.argv` or a 'second-instance' argv
  * @returns Validated CLI arguments; `{}` when nothing usable was supplied
  */
 export function parseCliArgs(argv: readonly string[]): CliArgs {
-  const rawSessionId = readFlagValue(argv, SESSION_FLAG);
-  if (rawSessionId === null) {
+  if (!hasFlag(argv, SESSION_FLAG)) {
     return {};
   }
 
-  const session = validateSessionId(rawSessionId);
-  if (!session.valid) {
-    logger.warn(`${SESSION_FLAG} value rejected: ${session.error ?? 'invalid sessionId'}`);
+  const sessionId = readFlagValue(argv, SESSION_FLAG, isSessionIdValue);
+  if (!sessionId) {
+    logger.warn(`${SESSION_FLAG} has no valid session id - ignoring`);
     return {};
   }
 
-  const result: CliArgs = { sessionId: session.value };
+  const result: CliArgs = { sessionId };
 
-  const rawProjectId = readFlagValue(argv, PROJECT_FLAG);
-  if (rawProjectId !== null) {
-    const project = validateProjectId(rawProjectId);
-    if (project.valid) {
-      result.projectId = project.value;
+  if (hasFlag(argv, PROJECT_FLAG)) {
+    const projectId = readFlagValue(argv, PROJECT_FLAG, isProjectIdValue);
+    if (projectId) {
+      result.projectId = projectId;
     } else {
       // Keep the session request: it can still be resolved by scanning projects.
-      logger.warn(`${PROJECT_FLAG} value rejected: ${project.error ?? 'invalid projectId'}`);
+      logger.warn(`${PROJECT_FLAG} has no valid encoded project path - ignoring`);
     }
   }
 

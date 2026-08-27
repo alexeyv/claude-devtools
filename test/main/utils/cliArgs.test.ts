@@ -111,6 +111,52 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs(packagedArgv('--project', PROJECT_ID))).toEqual({});
   });
 
+  // Chromium re-serializes a second instance's command line before Electron
+  // emits 'second-instance': switches move to the front, plain values to the
+  // back. These argv shapes were captured from a real macOS second launch.
+  describe("Chromium-normalized 'second-instance' argv", () => {
+    it('recovers a session value stranded at the tail', () => {
+      const argv = [
+        '/path/to/electron/dist/Electron.app/Contents/MacOS/Electron',
+        '--session',
+        '--allow-file-access-from-files',
+        '--enable-avfoundation',
+        '/Users/alex/src/claude-devtools',
+        SESSION_ID,
+      ];
+
+      expect(parseCliArgs(argv)).toEqual({ sessionId: SESSION_ID });
+    });
+
+    it('recovers session and project when both flags are detached', () => {
+      const argv = [
+        '/path/to/electron/dist/Electron.app/Contents/MacOS/Electron',
+        '--session',
+        '--project',
+        PROJECT_ID,
+        '--allow-file-access-from-files',
+        '--enable-avfoundation',
+        '/Users/alex/src/claude-devtools',
+        SESSION_ID,
+      ];
+
+      expect(parseCliArgs(argv)).toEqual({ sessionId: SESSION_ID, projectId: PROJECT_ID });
+    });
+
+    it('does not mistake the project id for the session id', () => {
+      const argv = [
+        '/path/to/electron/dist/Electron.app/Contents/MacOS/Electron',
+        '--session',
+        '--project',
+        PROJECT_ID,
+        '/Users/alex/src/claude-devtools',
+      ];
+
+      // The session value never arrived; the project id must not stand in for it.
+      expect(parseCliArgs(argv)).toEqual({});
+    });
+  });
+
   it('uses the first occurrence of a repeated flag', () => {
     const other = 'ffffffff-1111-2222-3333-444455556666';
     expect(parseCliArgs(packagedArgv('--session', SESSION_ID, '--session', other))).toEqual({
