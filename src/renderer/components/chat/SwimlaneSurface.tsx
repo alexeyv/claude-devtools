@@ -39,6 +39,8 @@ const MIN_VIEWPORT_DURATION_MS = 100;
 const TARGET_RULER_TICK_COUNT = 10;
 const MAX_RULER_TICK_COUNT = 20;
 const ESTIMATED_RULER_CHARACTER_WIDTH = 6;
+const ESTIMATED_DURATION_CHARACTER_WIDTH = 6;
+const HITL_LABEL_CLEARANCE = 4;
 const RULER_LABEL_GAP = 8;
 const HOVER_LABEL_GAP = 8;
 const HOVER_LABEL_HEIGHT = 20;
@@ -1092,14 +1094,57 @@ interface HitlLayout {
   pixel: number;
 }
 
+/**
+ * Horizontal pixel ranges the parent lane's duration labels will occupy.
+ *
+ * A duration label is painted only when it fits inside its own bar (see
+ * `useFittedLabel`), so the same fit test decides whether a range is claimed
+ * here. Widths are estimated rather than measured because this runs before the
+ * bars are in the DOM, matching how ruler tick labels are laid out.
+ */
+function durationLabelRanges(
+  segments: readonly SwimlaneParentSegment[],
+  axisStart: number,
+  axisDuration: number,
+  clockWidth: number
+): { end: number; start: number }[] {
+  const ranges: { end: number; start: number }[] = [];
+  for (const segment of segments) {
+    const barWidth = intervalPixelWidth(
+      segment.startTime,
+      segment.endTime,
+      axisStart,
+      axisDuration,
+      clockWidth
+    );
+    const labelWidth =
+      formatDuration(segment.durationMs).length * ESTIMATED_DURATION_CHARACTER_WIDTH;
+    if (labelWidth > barWidth - LABEL_HORIZONTAL_PADDING * 2) {
+      continue;
+    }
+    const start =
+      (percentage(segment.startTime, axisStart, axisDuration) / 100) * clockWidth +
+      LABEL_HORIZONTAL_PADDING;
+    ranges.push({
+      end: start + labelWidth + HITL_LABEL_CLEARANCE,
+      start: start - HITL_LABEL_CLEARANCE,
+    });
+  }
+  return ranges;
+}
+
 function layoutHitlMarks(
   marks: SwimlaneHitlMark[],
   axisStart: number,
   axisDuration: number,
-  clockWidth: number
+  clockWidth: number,
+  durationLabels: readonly { end: number; start: number }[] = []
 ): Map<string, HitlLayout> {
   const layout = new Map<string, HitlLayout>();
-  const occupiedRanges: { end: number; start: number }[][] = [[], []];
+  // Level 0 sits above the bars' duration text; level 1 shares its band, so the
+  // ranges duration labels already hold are reserved there. A mark whose label
+  // fits on neither level keeps its tick and drops the label.
+  const occupiedRanges: { end: number; start: number }[][] = [[], [...durationLabels]];
   const ordered = marks
     .map((mark, sourceIndex) => ({
       idealPixel: (percentage(mark.timestamp, axisStart, axisDuration) / 100) * clockWidth,
@@ -1697,11 +1742,17 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
       setHoveredInterval((current) => (current?.key === key ? null : current)),
     tooltipId,
   };
-  const hitlLayout = layoutHitlMarks(swimlane.hitlMarks, axisStart, axisDuration, clockWidth);
   const visibleParentSegments = swimlane.parentSegments.filter(
     (segment) =>
       intervalPixelWidth(segment.startTime, segment.endTime, axisStart, axisDuration, clockWidth) >=
       MIN_MEANINGFUL_INTERVAL_WIDTH
+  );
+  const hitlLayout = layoutHitlMarks(
+    swimlane.hitlMarks,
+    axisStart,
+    axisDuration,
+    clockWidth,
+    durationLabelRanges(visibleParentSegments, axisStart, axisDuration, clockWidth)
   );
   const visibleEvidenceIds = new Set(
     visibleParentSegments

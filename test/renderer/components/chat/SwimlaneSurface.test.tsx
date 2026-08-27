@@ -2417,6 +2417,39 @@ describe('SwimlaneSurface', () => {
     expect(resizedSecond - resizedFirst).toBeGreaterThanOrEqual(3);
   });
 
+  it('drops a stacked mark label that would land on a painted duration label', async () => {
+    const model = mixedModel();
+    // One bar spanning the whole axis: its "10.0s" label is painted at the far
+    // left, so only marks near the start share that band.
+    model.parentSegments = [
+      {
+        id: 'span',
+        type: 'assistant-output',
+        startTime: at(0, true),
+        endTime: at(10, true),
+        durationMs: 10_000,
+      },
+    ];
+    model.hitlMarks = [
+      // Over the duration label: the first mark takes the upper level, the
+      // second has nowhere left to go.
+      { id: 'over-ask', type: 'ask', timestamp: at(0.1), source: 'explicit-ask' },
+      { id: 'over-resume', type: 'resume', timestamp: at(0.11), source: 'linked-resume' },
+      // Clear of it: the second mark may still stack onto the lower level.
+      { id: 'clear-ask', type: 'ask', timestamp: at(5), source: 'explicit-ask' },
+      { id: 'clear-resume', type: 'resume', timestamp: at(5.01), source: 'linked-resume' },
+    ];
+    const host = await render(model);
+
+    expect(element(host, 'swimlane-parent-segment-span-duration').dataset.labelVisible).toBe('true');
+    expect(element(host, 'swimlane-mark-over-ask').dataset.labelVisible).toBe('true');
+    // The tick itself survives; only its label is dropped.
+    expect(element(host, 'swimlane-mark-over-resume')).toBeTruthy();
+    expect(element(host, 'swimlane-mark-over-resume').dataset.labelVisible).toBe('false');
+    expect(element(host, 'swimlane-mark-clear-ask').dataset.labelVisible).toBe('true');
+    expect(element(host, 'swimlane-mark-clear-resume').dataset.labelVisible).toBe('true');
+  });
+
   it('bounds deep hierarchy indentation while retaining ancestor guides and full text', async () => {
     const model = mixedModel();
     model.childRows[1] = { ...model.childRows[1], depth: 50 };
