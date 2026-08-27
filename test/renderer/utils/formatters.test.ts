@@ -24,6 +24,11 @@ describe('formatters', () => {
       expect(formatDuration(180000)).toBe('3m 0s');
     });
 
+    it('should carry a rounded-up remainder into the next minute', () => {
+      expect(formatDuration(419_600)).toBe('7m 0s');
+      expect(formatDuration(179_600)).toBe('3m 0s');
+    });
+
     it('should round milliseconds', () => {
       expect(formatDuration(499.7)).toBe('500ms');
     });
