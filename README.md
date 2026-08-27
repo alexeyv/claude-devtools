@@ -109,6 +109,18 @@ brew install --cask claude-devtools
 | **Windows** | [`.exe`](https://github.com/matt1398/claude-devtools/releases/latest) | Standard installer. May trigger SmartScreen — click "More info" → "Run anyway" |
 | **Docker** | `docker compose up` | Open `http://localhost:3456`. See [Docker deployment](#docker--standalone-deployment) |
 
+### Command-line launch
+
+Open a specific session directly:
+
+```bash
+claude-devtools --session <sessionId> [--project <projectId>]
+```
+
+`--project` is the encoded project path (`/Users/name/project` → `-Users-name-project`); omit it and the
+session is looked up across all projects. If the app is already running, the session opens in the existing
+window. An unknown session id is ignored and the app starts normally.
+
 ---
 
 ## Key Features

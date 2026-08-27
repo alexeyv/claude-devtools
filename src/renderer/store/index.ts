@@ -24,7 +24,7 @@ import { createUpdateSlice } from './slices/updateSlice';
 
 import type { DetectedError } from '../types/data';
 import type { AppState } from './types';
-import type { UpdaterStatus } from '@shared/types';
+import type { SessionLaunchTarget, UpdaterStatus } from '@shared/types';
 
 // =============================================================================
 // Store Creation
@@ -406,6 +406,29 @@ export function initializeNotificationListeners(): () => void {
         void useStore.getState().switchContext(id);
       }
     });
+    if (typeof cleanup === 'function') {
+      cleanupFns.push(cleanup);
+    }
+  }
+
+  // Open the session requested on the command line (`--session <id>`), both at
+  // launch and when a second launch is routed into this window.
+  const openLaunchTarget = (target: SessionLaunchTarget | null): void => {
+    if (!target?.projectId || !target.sessionId) return;
+    useStore.getState().navigateToSession(target.projectId, target.sessionId);
+  };
+
+  if (api.session?.getLaunchTarget) {
+    void api.session
+      .getLaunchTarget()
+      .then(openLaunchTarget)
+      .catch((error: unknown) => {
+        console.error('[store] Failed to read CLI launch target:', error);
+      });
+  }
+
+  if (api.session?.onOpenRequest) {
+    const cleanup = api.session.onOpenRequest(openLaunchTarget);
     if (typeof cleanup === 'function') {
       cleanupFns.push(cleanup);
     }

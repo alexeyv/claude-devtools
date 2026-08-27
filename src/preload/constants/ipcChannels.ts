@@ -178,6 +178,12 @@ export const APP_RELAUNCH = 'app:relaunch';
 /** Refresh session shortcut (main → renderer, triggered by Ctrl+R / Cmd+R) */
 export const SESSION_REFRESH = 'session:refresh';
 
+/** Fetch the session requested via the `--session` CLI flag (consumed once) */
+export const SESSION_GET_LAUNCH_TARGET = 'session:getLaunchTarget';
+
+/** Open a session (main → renderer, triggered by a second `--session` instance) */
+export const SESSION_OPEN_REQUEST = 'session:openRequest';
+
 // =============================================================================
 // Search API Channels
 // =============================================================================

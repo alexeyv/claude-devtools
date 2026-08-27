@@ -34,6 +34,7 @@ import type {
   Session,
   SessionAPI,
   SessionDetail,
+  SessionLaunchTarget,
   SessionMetrics,
   SessionsByIdsOptions,
   SessionsPaginationOptions,
@@ -482,6 +483,11 @@ export class HttpAPIClient implements ElectronAPI {
   session: SessionAPI = {
     scrollToLine: (sessionId: string, lineNumber: number): Promise<void> =>
       this.post('/api/session/scroll-to-line', { sessionId, lineNumber }),
+    // No-ops in browser mode — CLI launch arguments are Electron-only
+    getLaunchTarget: async (): Promise<SessionLaunchTarget | null> => null,
+    onOpenRequest: (_callback: (target: SessionLaunchTarget) => void): (() => void) => {
+      return () => {};
+    },
   };
 
   // ---------------------------------------------------------------------------

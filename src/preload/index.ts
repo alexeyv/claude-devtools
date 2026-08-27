@@ -19,6 +19,8 @@ import {
   MEMORY_LIST_OPENERS,
   MEMORY_OPEN_IN,
   MEMORY_READ_FILE,
+  SESSION_GET_LAUNCH_TARGET,
+  SESSION_OPEN_REQUEST,
   SESSION_REFRESH,
   SSH_CONNECT,
   SSH_DISCONNECT,
@@ -78,6 +80,7 @@ import type {
   NotificationTrigger,
   OpenTarget,
   OpenTargetId,
+  SessionLaunchTarget,
   SessionsByIdsOptions,
   SessionsPaginationOptions,
   SshConfigHostEntry,
@@ -108,6 +111,16 @@ interface IpcFileChangePayload {
   projectId?: string;
   sessionId?: string;
   isSubagent: boolean;
+}
+
+/**
+ * Narrows an IPC payload to a session launch target, so malformed messages are
+ * ignored rather than reaching the renderer.
+ */
+function isSessionLaunchTarget(value: unknown): value is SessionLaunchTarget {
+  if (typeof value !== 'object' || value === null) return false;
+  const target = value as Partial<SessionLaunchTarget>;
+  return typeof target.projectId === 'string' && typeof target.sessionId === 'string';
 }
 
 /**
@@ -338,6 +351,21 @@ const electronAPI: ElectronAPI = {
   session: {
     scrollToLine: (sessionId: string, lineNumber: number) =>
       ipcRenderer.invoke('session:scrollToLine', sessionId, lineNumber),
+    getLaunchTarget: async (): Promise<SessionLaunchTarget | null> => {
+      const target: unknown = await ipcRenderer.invoke(SESSION_GET_LAUNCH_TARGET);
+      return isSessionLaunchTarget(target) ? target : null;
+    },
+    onOpenRequest: (callback: (target: SessionLaunchTarget) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, target: unknown): void => {
+        if (isSessionLaunchTarget(target)) {
+          callback(target);
+        }
+      };
+      ipcRenderer.on(SESSION_OPEN_REQUEST, listener);
+      return (): void => {
+        ipcRenderer.removeListener(SESSION_OPEN_REQUEST, listener);
+      };
+    },
   },
 
   // Zoom factor sync (used for traffic-light-safe layout)
