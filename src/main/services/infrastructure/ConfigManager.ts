@@ -319,8 +319,8 @@ export class ConfigManager {
   constructor(configPath?: string) {
     this.configPath = configPath ?? DEFAULT_CONFIG_PATH;
     this.config = this.deepClone(DEFAULT_CONFIG);
-    this.triggerManager = new TriggerManager(this.config.notifications.triggers, () =>
-      this.saveConfig()
+    this.triggerManager = new TriggerManager(this.config.notifications.triggers, (triggers) =>
+      this.persistTriggers(triggers)
     );
   }
 
@@ -331,8 +331,8 @@ export class ConfigManager {
   async initialize(): Promise<void> {
     this.config = await this.loadConfig();
     setClaudeBasePathOverride(this.config.general.claudeRootPath);
-    this.triggerManager = new TriggerManager(this.config.notifications.triggers, () =>
-      this.saveConfig()
+    this.triggerManager = new TriggerManager(this.config.notifications.triggers, (triggers) =>
+      this.persistTriggers(triggers)
     );
   }
 
@@ -386,13 +386,40 @@ export class ConfigManager {
       }
 
       const content = await fs.promises.readFile(this.configPath, 'utf8');
-      const parsed = JSON.parse(content) as Partial<AppConfig>;
+      let parsed: Partial<AppConfig>;
+      try {
+        parsed = JSON.parse(content) as Partial<AppConfig>;
+      } catch (parseError) {
+        await this.backupCorruptConfig(parseError);
+        return this.deepClone(DEFAULT_CONFIG);
+      }
 
       // Merge with defaults to ensure all fields exist
       return this.mergeWithDefaults(parsed);
     } catch (error) {
       logger.error('Error loading config, using defaults:', error);
       return this.deepClone(DEFAULT_CONFIG);
+    }
+  }
+
+  /**
+   * Moves an unparseable config file aside so the next save does not
+   * silently overwrite whatever the user had.
+   */
+  private async backupCorruptConfig(parseError: unknown): Promise<void> {
+    const backupPath = `${this.configPath}.bak-${Date.now()}`;
+    try {
+      await fs.promises.rename(this.configPath, backupPath);
+      logger.error(
+        `Config file is not valid JSON; backed it up to ${backupPath} and using defaults:`,
+        parseError
+      );
+    } catch (renameError) {
+      logger.error(
+        'Config file is not valid JSON and could not be backed up; using defaults:',
+        parseError,
+        renameError
+      );
     }
   }
 
@@ -417,8 +444,12 @@ export class ConfigManager {
       fs.mkdirSync(configDir, { recursive: true });
     }
 
+    // Write to a temp file and rename so a crash mid-write never leaves a
+    // truncated config behind.
     const content = JSON.stringify(config, null, 2);
-    fs.writeFileSync(this.configPath, content, 'utf8');
+    const tmpPath = `${this.configPath}.tmp`;
+    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.renameSync(tmpPath, this.configPath);
   }
 
   /**
@@ -630,7 +661,7 @@ export class ConfigManager {
    * @returns Updated config
    */
   addTrigger(trigger: NotificationTrigger): AppConfig {
-    this.config.notifications.triggers = this.triggerManager.add(trigger);
+    this.triggerManager.add(trigger);
     return this.deepClone(this.config);
   }
 
@@ -641,7 +672,7 @@ export class ConfigManager {
    * @returns Updated config
    */
   updateTrigger(triggerId: string, updates: Partial<NotificationTrigger>): AppConfig {
-    this.config.notifications.triggers = this.triggerManager.update(triggerId, updates);
+    this.triggerManager.update(triggerId, updates);
     return this.deepClone(this.config);
   }
 
@@ -652,8 +683,17 @@ export class ConfigManager {
    * @returns Updated config
    */
   removeTrigger(triggerId: string): AppConfig {
-    this.config.notifications.triggers = this.triggerManager.remove(triggerId);
+    this.triggerManager.remove(triggerId);
     return this.deepClone(this.config);
+  }
+
+  /**
+   * Stores the trigger list produced by TriggerManager and persists it.
+   * Assignment happens before saving so the written file reflects the change.
+   */
+  private persistTriggers(triggers: NotificationTrigger[]): void {
+    this.config.notifications.triggers = triggers;
+    this.saveConfig();
   }
 
   /**

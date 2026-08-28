@@ -8,7 +8,9 @@ export { formatTokensCompact } from '@shared/utils/tokenFormatting';
 /**
  * Formats duration in milliseconds to a human-readable string.
  */
-export function formatDuration(ms: number): string {
+export function formatDuration(rawMs: number): string {
+  // Clock skew between call and result can yield negatives; never render them.
+  const ms = Math.max(0, rawMs);
   if (ms < 1000) {
     return `${Math.round(ms)}ms`;
   }

@@ -6,7 +6,15 @@
  * 2. toolResults array fallback for other patterns
  */
 
-import type { ParsedMessage, ToolCall, ToolExecution } from '@main/types';
+import type { ParsedMessage, ToolCall, ToolExecution, ToolResult } from '@main/types';
+
+/**
+ * Milliseconds between two timestamps, or 0 when either is an invalid Date.
+ */
+function elapsedMs(start: Date, end: Date): number {
+  const ms = end.getTime() - start.getTime();
+  return isNaN(ms) ? 0 : ms;
+}
 
 /**
  * Build tool execution tracking from messages.
@@ -28,46 +36,52 @@ export function buildToolExecutions(messages: ParsedMessage[]): ToolExecution[] 
 
   // Second pass: match with results and build executions
   // Try sourceToolUseID first (most accurate), then fall back to toolResults array
+  const matchedResultIds = new Set<string>();
+  const matchedCallIds = new Set<string>();
+
+  const pushExecution = (
+    callInfo: { call: ToolCall; startTime: Date },
+    result: ToolResult,
+    msg: ParsedMessage
+  ): void => {
+    matchedResultIds.add(result.toolUseId);
+    matchedCallIds.add(callInfo.call.id);
+    executions.push({
+      toolCall: callInfo.call,
+      result,
+      startTime: callInfo.startTime,
+      endTime: msg.timestamp,
+      durationMs: elapsedMs(callInfo.startTime, msg.timestamp),
+    });
+  };
+
   for (const msg of messages) {
-    // Check if this message has a sourceToolUseID (internal user messages)
+    // Check if this message has a sourceToolUseID (internal user messages).
+    // A message can carry several tool_results, so pick the one whose id
+    // actually matches rather than blindly taking the first.
     if (msg.sourceToolUseID) {
       const callInfo = toolCallMap.get(msg.sourceToolUseID);
-      if (callInfo && msg.toolResults.length > 0) {
-        // Use the first tool result for this internal user message
-        const result = msg.toolResults[0];
-        executions.push({
-          toolCall: callInfo.call,
-          result,
-          startTime: callInfo.startTime,
-          endTime: msg.timestamp,
-          durationMs: msg.timestamp.getTime() - callInfo.startTime.getTime(),
-        });
+      const result = msg.toolResults.find((r) => r.toolUseId === msg.sourceToolUseID);
+      if (callInfo && result && !matchedResultIds.has(result.toolUseId)) {
+        pushExecution(callInfo, result, msg);
       }
     }
 
     // Also check toolResults array for any results not matched above
     for (const result of msg.toolResults) {
       // Skip if already matched via sourceToolUseID
-      const alreadyMatched = executions.some((e) => e.result?.toolUseId === result.toolUseId);
-      if (alreadyMatched) continue;
+      if (matchedResultIds.has(result.toolUseId)) continue;
 
       const callInfo = toolCallMap.get(result.toolUseId);
       if (callInfo) {
-        executions.push({
-          toolCall: callInfo.call,
-          result,
-          startTime: callInfo.startTime,
-          endTime: msg.timestamp,
-          durationMs: msg.timestamp.getTime() - callInfo.startTime.getTime(),
-        });
+        pushExecution(callInfo, result, msg);
       }
     }
   }
 
   // Add calls without results
   for (const [id, callInfo] of toolCallMap) {
-    const hasResult = executions.some((e) => e.toolCall.id === id);
-    if (!hasResult) {
+    if (!matchedCallIds.has(id)) {
       executions.push({
         toolCall: callInfo.call,
         startTime: callInfo.startTime,

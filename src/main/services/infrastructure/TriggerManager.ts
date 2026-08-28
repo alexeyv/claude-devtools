@@ -71,9 +71,13 @@ export const DEFAULT_TRIGGERS: NotificationTrigger[] = [
 
 export class TriggerManager {
   private triggers: NotificationTrigger[];
-  private readonly onSave: () => void;
+  private readonly onSave: (triggers: NotificationTrigger[]) => void;
 
-  constructor(triggers: NotificationTrigger[], onSave: () => void) {
+  /**
+   * @param onSave - Called with the updated trigger list after every mutation.
+   *   The owner is expected to store the list before persisting it.
+   */
+  constructor(triggers: NotificationTrigger[], onSave: (triggers: NotificationTrigger[]) => void) {
     this.triggers = triggers;
     this.onSave = onSave;
   }
@@ -121,7 +125,7 @@ export class TriggerManager {
     }
 
     this.triggers = [...this.triggers, trigger];
-    this.onSave();
+    this.onSave(this.getAll());
     return this.getAll();
   }
 
@@ -155,7 +159,7 @@ export class TriggerManager {
     }
 
     this.triggers = this.triggers.map((t, i) => (i === index ? updated : t));
-    this.onSave();
+    this.onSave(this.getAll());
     return this.getAll();
   }
 
@@ -188,7 +192,7 @@ export class TriggerManager {
     }
 
     this.triggers = this.triggers.filter((t) => t.id !== triggerId);
-    this.onSave();
+    this.onSave(this.getAll());
     return this.getAll();
   }
 

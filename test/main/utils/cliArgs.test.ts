@@ -35,21 +35,42 @@ describe('parseCliArgs', () => {
     expect(parseCliArgs(packagedArgv())).toEqual({});
   });
 
+  it('parses a process-local Claude root without a session', () => {
+    expect(parseCliArgs(packagedArgv('--root', '../claude-home'))).toEqual({
+      root: '../claude-home',
+    });
+  });
+
+  it('parses session and root together', () => {
+    expect(
+      parseCliArgs(packagedArgv('--session', SESSION_ID, '--root', '/Users/test/claude-home'))
+    ).toEqual({
+      session: SESSION_ID,
+      root: '/Users/test/claude-home',
+    });
+  });
+
+  it('reports a root flag with no path', () => {
+    expect(parseCliArgs(packagedArgv('--root'))).toEqual({
+      error: '--root requires a path to a Claude root directory',
+    });
+  });
+
   it('parses "--session <id>"', () => {
     expect(parseCliArgs(packagedArgv('--session', SESSION_ID))).toEqual({
-      sessionId: SESSION_ID,
+      session: SESSION_ID,
     });
   });
 
   it('parses "--session=<id>"', () => {
     expect(parseCliArgs(packagedArgv(`--session=${SESSION_ID}`))).toEqual({
-      sessionId: SESSION_ID,
+      session: SESSION_ID,
     });
   });
 
   it('parses session and project together', () => {
     expect(parseCliArgs(packagedArgv('--session', SESSION_ID, '--project', PROJECT_ID))).toEqual({
-      sessionId: SESSION_ID,
+      session: SESSION_ID,
       projectId: PROJECT_ID,
     });
   });
@@ -58,53 +79,70 @@ describe('parseCliArgs', () => {
     expect(
       parseCliArgs(packagedArgv(`--project=${PROJECT_ID}`, `--session=${SESSION_ID}`))
     ).toEqual({
-      sessionId: SESSION_ID,
+      session: SESSION_ID,
       projectId: PROJECT_ID,
     });
   });
 
   it('skips Electron leading arguments in development argv', () => {
-    expect(parseCliArgs(devArgv('--session', SESSION_ID))).toEqual({ sessionId: SESSION_ID });
+    expect(parseCliArgs(devArgv('--session', SESSION_ID))).toEqual({ session: SESSION_ID });
   });
 
   it('ignores unrelated switches', () => {
     expect(
       parseCliArgs(packagedArgv('--inspect', '--session', SESSION_ID, '--no-sandbox'))
-    ).toEqual({ sessionId: SESSION_ID });
+    ).toEqual({ session: SESSION_ID });
   });
 
   it('trims surrounding whitespace from values', () => {
     expect(parseCliArgs(packagedArgv('--session', `  ${SESSION_ID}  `))).toEqual({
-      sessionId: SESSION_ID,
+      session: SESSION_ID,
     });
   });
 
-  it('ignores "--session" with no value', () => {
-    expect(parseCliArgs(packagedArgv('--session'))).toEqual({});
+  it('reports "--session" with no value', () => {
+    expect(parseCliArgs(packagedArgv('--session'))).toEqual({
+      error: '--session requires a session ID or a path to a session log file',
+    });
   });
 
-  it('ignores "--session" followed by another flag', () => {
-    expect(parseCliArgs(packagedArgv('--session', '--project', PROJECT_ID))).toEqual({});
+  it('reports "--session" followed by another flag', () => {
+    expect(parseCliArgs(packagedArgv('--session', '--project', PROJECT_ID))).toEqual({
+      error: '--session requires a session ID or a path to a session log file',
+    });
   });
 
-  it('ignores an empty "--session=" value', () => {
-    expect(parseCliArgs(packagedArgv('--session='))).toEqual({});
+  it('reports an empty "--session=" value', () => {
+    expect(parseCliArgs(packagedArgv('--session='))).toEqual({
+      error: '--session requires a session ID or a path to a session log file',
+    });
   });
 
-  it('rejects a session id with invalid characters and warns', () => {
-    logWarn.mockClear();
-    expect(parseCliArgs(packagedArgv('--session', '../../etc/passwd'))).toEqual({});
-    expect(logWarn).toHaveBeenCalledTimes(1);
+  it('preserves a relative path for resolution', () => {
+    expect(parseCliArgs(packagedArgv('--session', '../../logs/session.jsonl'))).toEqual({
+      session: '../../logs/session.jsonl',
+    });
   });
 
-  it('rejects an over-long session id', () => {
-    expect(parseCliArgs(packagedArgv('--session', 'a'.repeat(129)))).toEqual({});
+  it('preserves an absolute path for resolution', () => {
+    expect(parseCliArgs(packagedArgv('--session', '/Users/test/logs/session.jsonl'))).toEqual({
+      session: '/Users/test/logs/session.jsonl',
+    });
   });
 
-  it('keeps the session when the project id is invalid', () => {
+  it('parses the relative file passed through electron-vite dev --', () => {
+    expect(parseCliArgs(devArgv('--session', 'logs/session.jsonl'))).toEqual({
+      session: 'logs/session.jsonl',
+    });
+  });
+
+  it('reports an invalid project id without dropping the session request', () => {
     expect(
       parseCliArgs(packagedArgv('--session', SESSION_ID, '--project', 'not/a/project'))
-    ).toEqual({ sessionId: SESSION_ID });
+    ).toEqual({
+      session: SESSION_ID,
+      error: '--project is not a valid encoded Claude project path',
+    });
   });
 
   it('ignores "--project" without "--session"', () => {
@@ -125,7 +163,7 @@ describe('parseCliArgs', () => {
         SESSION_ID,
       ];
 
-      expect(parseCliArgs(argv)).toEqual({ sessionId: SESSION_ID });
+      expect(parseCliArgs(argv)).toEqual({ session: SESSION_ID });
     });
 
     it('recovers session and project when both flags are detached', () => {
@@ -140,7 +178,36 @@ describe('parseCliArgs', () => {
         SESSION_ID,
       ];
 
-      expect(parseCliArgs(argv)).toEqual({ sessionId: SESSION_ID, projectId: PROJECT_ID });
+      expect(parseCliArgs(argv)).toEqual({ session: SESSION_ID, projectId: PROJECT_ID });
+    });
+
+    it('recovers an absolute JSONL path stranded at the tail', () => {
+      const argv = [
+        '/path/to/electron/dist/Electron.app/Contents/MacOS/Electron',
+        '--session',
+        '--allow-file-access-from-files',
+        '/Users/alex/src/claude-devtools',
+        '/Users/test/logs/session.jsonl',
+      ];
+
+      expect(parseCliArgs(argv)).toEqual({ session: '/Users/test/logs/session.jsonl' });
+    });
+
+    it('recovers detached session and root values', () => {
+      const argv = [
+        '/path/to/electron/dist/Electron.app/Contents/MacOS/Electron',
+        '--session',
+        '--root',
+        '--allow-file-access-from-files',
+        '/Users/alex/src/claude-devtools',
+        SESSION_ID,
+        '/Users/test/claude-home',
+      ];
+
+      expect(parseCliArgs(argv)).toEqual({
+        session: SESSION_ID,
+        root: '/Users/test/claude-home',
+      });
     });
 
     it('does not mistake the project id for the session id', () => {
@@ -153,14 +220,16 @@ describe('parseCliArgs', () => {
       ];
 
       // The session value never arrived; the project id must not stand in for it.
-      expect(parseCliArgs(argv)).toEqual({});
+      expect(parseCliArgs(argv)).toEqual({
+        error: '--session requires a session ID or a path to a session log file',
+      });
     });
   });
 
   it('uses the first occurrence of a repeated flag', () => {
     const other = 'ffffffff-1111-2222-3333-444455556666';
     expect(parseCliArgs(packagedArgv('--session', SESSION_ID, '--session', other))).toEqual({
-      sessionId: SESSION_ID,
+      session: SESSION_ID,
     });
   });
 });

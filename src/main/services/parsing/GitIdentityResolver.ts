@@ -36,7 +36,9 @@ class GitIdentityResolver {
   /**
    * Helper to find the nearest .git file or directory by searching upwards.
    */
-  private async findGitPath(projectPath: string): Promise<{ repoRoot: string; gitPath: string; stats: fs.Stats } | null> {
+  private async findGitPath(
+    projectPath: string
+  ): Promise<{ repoRoot: string; gitPath: string; stats: fs.Stats } | null> {
     try {
       let currentPath = path.resolve(projectPath);
 
@@ -50,7 +52,7 @@ class GitIdentityResolver {
         } catch {
           // Ignore and continue upward
         }
-        
+
         const parentDir = path.dirname(currentPath);
         if (parentDir === currentPath) {
           break;
@@ -682,7 +684,7 @@ class GitIdentityResolver {
   private async getGitWorktreeName(projectPath: string): Promise<string | null> {
     try {
       const gitInfo = await this.findGitPath(projectPath);
-      
+
       if (!gitInfo) return null;
       if (!gitInfo.stats.isFile()) return null;
 

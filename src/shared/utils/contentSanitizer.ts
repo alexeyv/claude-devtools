@@ -26,8 +26,7 @@ const NOISE_TAG_PATTERNS = [
  * Pattern to match the trailing "Read the output file to retrieve the result: /path"
  * instruction that follows task notifications.
  */
-const TASK_OUTPUT_INSTRUCTION_PATTERN =
-  / ?Read the output file to retrieve the result: [^\s]+/g;
+const TASK_OUTPUT_INSTRUCTION_PATTERN = / ?Read the output file to retrieve the result: [^\s]+/g;
 
 /**
  * Extract content from <local-command-stdout> tags.

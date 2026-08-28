@@ -28,7 +28,10 @@ function parseFrontmatter(content: string): Record<string, string> {
     const key = line.slice(0, colonIdx).trim();
     let value = line.slice(colonIdx + 1).trim();
     // Strip surrounding quotes
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     if (key) result[key] = value;
@@ -40,9 +43,7 @@ function parseFrontmatter(content: string): Record<string, string> {
  * Read agent config files from a project's `.claude/agents/` directory.
  * Returns a map of agent name → config (with optional color).
  */
-export async function readAgentConfigs(
-  projectRoot: string
-): Promise<Record<string, AgentConfig>> {
+export async function readAgentConfigs(projectRoot: string): Promise<Record<string, AgentConfig>> {
   const agentsDir = path.join(projectRoot, '.claude', 'agents');
   const result: Record<string, AgentConfig> = {};
 

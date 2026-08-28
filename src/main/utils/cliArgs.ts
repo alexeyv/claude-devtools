@@ -4,9 +4,10 @@
  * Supported flags (both `--flag value` and `--flag=value` forms):
  * - `--session <sessionId>` - open this session on launch
  * - `--project <projectId>` - encoded project path containing the session
+ * - `--root <path>` - use this Claude root for this process only
  *
- * Malformed or unusable flags are dropped with a warning so that a bad command
- * line degrades into a normal startup instead of crashing the app.
+ * Parsing preserves malformed requests as errors so the main process can show
+ * the user why the requested session was not opened.
  */
 
 import { validateProjectId, validateSessionId } from '@main/ipc/guards';
@@ -20,17 +21,29 @@ const SESSION_FLAG = '--session';
 /** Flag scoping `--session` to a specific encoded project path. */
 const PROJECT_FLAG = '--project';
 
+/** Flag overriding the configured Claude root for this process. */
+const ROOT_FLAG = '--root';
+
 /**
- * Session/project requested on the command line.
- * Both fields are absent when the flags were missing or invalid.
+ * Session/project requested on the command line. A present but malformed
+ * request carries `error` so it cannot be mistaken for no request at all.
  */
 export interface CliArgs {
-  sessionId?: string;
+  session?: string;
   projectId?: string;
+  root?: string;
+  error?: string;
 }
 
-const isSessionIdValue = (value: string): boolean => validateSessionId(value).valid;
 const isProjectIdValue = (value: string): boolean => validateProjectId(value).valid;
+
+const isSessionValue = (value: string): boolean => {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 4096;
+};
+
+const isDetachedSessionValue = (value: string): boolean =>
+  validateSessionId(value).valid || value.toLowerCase().endsWith('.jsonl');
 
 /** Whether argv carries the flag at all, with or without an attached value. */
 function hasFlag(argv: readonly string[], flag: string): boolean {
@@ -77,36 +90,114 @@ function readFlagValue(
   return null;
 }
 
+function readSessionValue(argv: readonly string[]): string | null {
+  const index = argv.findIndex((arg) => arg === SESSION_FLAG || arg.startsWith(`${SESSION_FLAG}=`));
+  if (index === -1) return null;
+
+  const flagArg = argv[index];
+  if (flagArg.startsWith(`${SESSION_FLAG}=`)) {
+    const value = flagArg.slice(SESSION_FLAG.length + 1).trim();
+    return isSessionValue(value) ? value : null;
+  }
+
+  const adjacent = argv[index + 1]?.trim();
+  if (adjacent && !adjacent.startsWith('-')) {
+    return isSessionValue(adjacent) ? adjacent : null;
+  }
+
+  // Chromium can detach the value from a bare switch for a second instance.
+  // Ignore its executable/app paths and recover only an ID or JSONL filename.
+  for (let i = argv.length - 1; i > index; i--) {
+    const candidate = argv[i].trim();
+    if (isSessionValue(candidate) && isDetachedSessionValue(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function readRootValue(argv: readonly string[]): string | null {
+  const index = argv.findIndex((arg) => arg === ROOT_FLAG || arg.startsWith(`${ROOT_FLAG}=`));
+  if (index === -1) return null;
+
+  const flagArg = argv[index];
+  if (flagArg.startsWith(`${ROOT_FLAG}=`)) {
+    const value = flagArg.slice(ROOT_FLAG.length + 1).trim();
+    return isSessionValue(value) ? value : null;
+  }
+
+  const adjacent = argv[index + 1]?.trim();
+  if (adjacent && !adjacent.startsWith('-')) {
+    return isSessionValue(adjacent) ? adjacent : null;
+  }
+
+  // Same second-instance normalization as --session. Root values are paths,
+  // so a slash/dot/tilde distinguishes them from a detached session ID.
+  for (let i = argv.length - 1; i > index; i--) {
+    const candidate = argv[i].trim();
+    if (
+      isSessionValue(candidate) &&
+      !candidate.toLowerCase().endsWith('.jsonl') &&
+      (candidate.startsWith('.') ||
+        candidate.startsWith('~') ||
+        candidate.includes('/') ||
+        candidate.includes('\\'))
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Parses launch arguments out of an argv array.
  *
  * Electron's own leading arguments (executable path, app path, Chromium
- * switches) are harmless here because only values that validate as ids are
- * consumed.
+ * switches) are skipped while recovering detached flag values.
  *
  * @param argv - Raw argv, e.g. `process.argv` or a 'second-instance' argv
  * @returns Validated CLI arguments; `{}` when nothing usable was supplied
  */
 export function parseCliArgs(argv: readonly string[]): CliArgs {
-  if (!hasFlag(argv, SESSION_FLAG)) {
+  const hasSession = hasFlag(argv, SESSION_FLAG);
+  const hasRoot = hasFlag(argv, ROOT_FLAG);
+  if (!hasSession && !hasRoot) {
     return {};
   }
 
-  const sessionId = readFlagValue(argv, SESSION_FLAG, isSessionIdValue);
-  if (!sessionId) {
-    logger.warn(`${SESSION_FLAG} has no valid session id - ignoring`);
-    return {};
+  const result: CliArgs = {};
+
+  if (hasRoot) {
+    const root = readRootValue(argv);
+    if (!root) {
+      result.error = `${ROOT_FLAG} requires a path to a Claude root directory`;
+      logger.warn(result.error);
+    } else {
+      result.root = root;
+    }
   }
 
-  const result: CliArgs = { sessionId };
+  if (!hasSession) {
+    return result;
+  }
+
+  const session = readSessionValue(argv);
+  if (!session) {
+    result.error = `${SESSION_FLAG} requires a session ID or a path to a session log file`;
+    logger.warn(result.error);
+    return result;
+  }
+  result.session = session;
 
   if (hasFlag(argv, PROJECT_FLAG)) {
     const projectId = readFlagValue(argv, PROJECT_FLAG, isProjectIdValue);
     if (projectId) {
       result.projectId = projectId;
     } else {
-      // Keep the session request: it can still be resolved by scanning projects.
-      logger.warn(`${PROJECT_FLAG} has no valid encoded project path - ignoring`);
+      result.error = `${PROJECT_FLAG} is not a valid encoded Claude project path`;
+      logger.warn(result.error);
     }
   }
 

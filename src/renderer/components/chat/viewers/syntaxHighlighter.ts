@@ -492,7 +492,11 @@ export function highlightLine(line: string, language: string): React.ReactNode[]
 
     // Check for comment (# style for Python/Shell/R/Ruby/PHP)
     if (
-      (language === 'python' || language === 'bash' || language === 'r' || language === 'ruby' || language === 'php') &&
+      (language === 'python' ||
+        language === 'bash' ||
+        language === 'r' ||
+        language === 'ruby' ||
+        language === 'php') &&
       remaining.startsWith('#')
     ) {
       segments.push(

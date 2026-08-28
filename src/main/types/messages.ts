@@ -6,6 +6,8 @@
  * parsed messages into categories for chunk building.
  */
 
+import { type AgentPlatform } from '@shared/utils/toolIdentity';
+
 import {
   EMPTY_STDERR,
   EMPTY_STDOUT,
@@ -28,8 +30,10 @@ import { type ContentBlock, type ToolUseResultData } from './jsonl';
 export interface ToolCall {
   /** Tool use ID for linking to results */
   id: string;
-  /** Tool name */
+  /** Tool name, exactly as the recording platform named it */
   name: string;
+  /** Platform that recorded the call; drives display name and summary */
+  platform?: AgentPlatform;
   /** Tool input parameters */
   input: Record<string, unknown>;
   /** Whether this is a Task (subagent) tool call */
@@ -256,7 +260,10 @@ export function isParsedSystemChunkMessage(msg: ParsedMessage): boolean {
   // Array content - check text blocks
   if (Array.isArray(content)) {
     return content.some(
-      (block) => block.type === 'text' && block.text.startsWith(LOCAL_COMMAND_STDOUT_TAG)
+      (block) =>
+        block.type === 'text' &&
+        (block.text.startsWith(LOCAL_COMMAND_STDOUT_TAG) ||
+          block.text.startsWith(LOCAL_COMMAND_STDERR_TAG))
     );
   }
 

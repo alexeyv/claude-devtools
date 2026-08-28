@@ -312,10 +312,6 @@ export async function listAvailableOpeners(): Promise<OpenTarget[]> {
   return availabilityCache;
 }
 
-export function invalidateOpenerCache(): void {
-  availabilityCache = null;
-}
-
 export async function openIn(
   targetId: OpenTargetId,
   absolutePath: string,

@@ -30,7 +30,13 @@ export const CollapsibleOutputSection: React.FC<CollapsibleOutputSectionProps> =
       <button
         type="button"
         className="mb-1 flex items-center gap-2 text-xs"
-        style={{ color: 'var(--tool-item-muted)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+        style={{
+          color: 'var(--tool-item-muted)',
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          cursor: 'pointer',
+        }}
         onClick={() => setIsExpanded((prev) => !prev)}
       >
         {isExpanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
@@ -44,9 +50,7 @@ export const CollapsibleOutputSection: React.FC<CollapsibleOutputSectionProps> =
             backgroundColor: 'var(--code-bg)',
             border: '1px solid var(--code-border)',
             color:
-              status === 'error'
-                ? 'var(--tool-result-error-text)'
-                : 'var(--color-text-secondary)',
+              status === 'error' ? 'var(--tool-result-error-text)' : 'var(--color-text-secondary)',
           }}
         >
           {children}

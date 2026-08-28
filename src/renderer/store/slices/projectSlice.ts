@@ -84,17 +84,17 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         sessionContextStats: null,
         sessionDetailError: null,
       });
-      // Invalidate stale cache so fetchSessionsInitial() overwrites with fresh data
-      get()._sessionCache.delete(id);
+      // Show the cached list immediately (no spinner) and refresh it in place.
+      void get().refreshSessionsInPlace(id);
+      void get().loadPinnedSessions();
+      void get().loadHiddenSessions();
     } else {
       set({
         selectedProjectId: id,
         sidebarCollapsed: false,
         ...getSessionResetState(),
       });
+      void get().fetchSessionsInitial(id);
     }
-
-    // Always fetch fresh data (background refresh when cached)
-    void get().fetchSessionsInitial(id);
   },
 });

@@ -170,6 +170,35 @@ describe('paneSlice', () => {
       expect(paneLayout.panes[0].widthFraction).toBe(1);
     });
 
+    it('cleans up per-tab session data for tabs in the closed pane', () => {
+      const state = store.getState();
+      state.openTab({ type: 'session', sessionId: 's1', projectId: 'p1', label: 'Session 1' });
+      state.openTab({ type: 'session', sessionId: 's2', projectId: 'p1', label: 'Session 2' });
+
+      const [tab1, tab2] = store.getState().paneLayout.panes[0].tabs;
+      state.splitPane('pane-default', tab1.id, 'right');
+      const newPaneId = store.getState().paneLayout.focusedPaneId;
+
+      const emptyTabData = {
+        sessionDetail: null,
+        conversation: null,
+        conversationLoading: false,
+        sessionDetailLoading: false,
+        sessionDetailError: null,
+        sessionClaudeMdStats: null,
+        sessionContextStats: null,
+        sessionPhaseInfo: null,
+        visibleAIGroupId: null,
+        selectedAIGroup: null,
+      };
+      store.setState({ tabSessionData: { [tab1.id]: emptyTabData, [tab2.id]: emptyTabData } });
+
+      store.getState().closePane(newPaneId);
+
+      expect(store.getState().tabSessionData[tab1.id]).toBeUndefined();
+      expect(store.getState().tabSessionData[tab2.id]).toBeDefined();
+    });
+
     it('cannot close the last pane', () => {
       store.getState().closePane('pane-default');
       expect(store.getState().paneLayout.panes).toHaveLength(1);

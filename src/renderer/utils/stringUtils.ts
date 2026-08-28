@@ -25,10 +25,10 @@ const isMacPlatform =
   typeof window !== 'undefined' && window.navigator.userAgent.includes('Macintosh');
 
 /** Returns '⌘' on macOS, 'Ctrl' on Windows/Linux. */
-export const modKey = isMacPlatform ? '⌘' : 'Ctrl+';
+const modKey = isMacPlatform ? '⌘' : 'Ctrl+';
 
 /** Returns '⇧' on macOS, 'Shift+' on Windows/Linux. */
-export const shiftKey = isMacPlatform ? '⇧' : 'Shift+';
+const shiftKey = isMacPlatform ? '⇧' : 'Shift+';
 
 /**
  * Formats a keyboard shortcut for the current platform.

@@ -235,7 +235,11 @@ export class SessionParser {
       return { start: now, end: now, durationMs: 0 };
     }
 
-    const timestamps = messages.map((m) => m.timestamp.getTime());
+    const timestamps = messages.map((m) => m.timestamp.getTime()).filter((t) => !isNaN(t));
+    if (timestamps.length === 0) {
+      const now = new Date();
+      return { start: now, end: now, durationMs: 0 };
+    }
     let min = timestamps[0];
     let max = timestamps[0];
     for (let i = 1; i < timestamps.length; i++) {

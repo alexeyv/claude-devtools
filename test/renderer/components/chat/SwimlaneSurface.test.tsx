@@ -188,13 +188,16 @@ function mixedModel(): SwimlaneModel {
 
 async function render(
   model: SwimlaneModel,
-  onTarget?: (target: SwimlaneNavigationTarget) => void
+  onTarget?: (target: SwimlaneNavigationTarget) => void,
+  resetKey?: string
 ): Promise<HTMLElement> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   mountedRoot = createRoot(host);
   await act(async () => {
-    mountedRoot?.render(React.createElement(SwimlaneSurface, { swimlane: model, onTarget }));
+    mountedRoot?.render(
+      React.createElement(SwimlaneSurface, { swimlane: model, onTarget, resetKey })
+    );
     await Promise.resolve();
   });
   return host;
@@ -202,10 +205,13 @@ async function render(
 
 async function rerender(
   model: SwimlaneModel,
-  onTarget?: (target: SwimlaneNavigationTarget) => void
+  onTarget?: (target: SwimlaneNavigationTarget) => void,
+  resetKey?: string
 ): Promise<void> {
   await act(async () => {
-    mountedRoot?.render(React.createElement(SwimlaneSurface, { swimlane: model, onTarget }));
+    mountedRoot?.render(
+      React.createElement(SwimlaneSurface, { swimlane: model, onTarget, resetKey })
+    );
     await Promise.resolve();
   });
 }
@@ -1184,6 +1190,22 @@ describe('SwimlaneSurface', () => {
     expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).value).toBe('0');
     expect(replacementViewport.scrollLeft).toBe(0);
     expect(element(host, 'swimlane-clock-canvas').style.width).toBe('936px');
+  });
+
+  it('keeps zoom and scroll across a model replacement that shares a resetKey', async () => {
+    const model = mixedModel();
+    const host = await render(model, undefined, 'session-1');
+    const initialViewport = element(host, 'swimlane-horizontal-scroll');
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 1);
+    await rerender({ ...model, parentSegments: [...model.parentSegments] }, undefined, 'session-1');
+
+    expect(element(host, 'swimlane-horizontal-scroll')).toBe(initialViewport);
+    expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).value).toBe('1');
+
+    await rerender(model, undefined, 'session-2');
+    expect(element(host, 'swimlane-horizontal-scroll')).not.toBe(initialViewport);
+    expect((element(host, 'swimlane-zoom-range') as HTMLInputElement).value).toBe('0');
   });
 
   it('refits from measured viewport width and preserves center while zoomed', async () => {
@@ -2192,21 +2214,25 @@ describe('SwimlaneSurface', () => {
 
   it('keeps active details attached to stable identities across interval insertion', async () => {
     const model = mixedModel();
-    const host = await render(model);
+    const host = await render(model, undefined, 'session-1');
     const work = element(host, 'swimlane-parent-segment-work');
     await mouseOver(work);
 
-    model.parentSegments = [
-      {
-        id: 'inserted-idle',
-        type: 'unattributed',
-        startTime: at(0),
-        endTime: at(0.1),
-        durationMs: 100,
-      },
-      ...model.parentSegments,
-    ];
-    await rerender(model);
+    // A live refresh replaces the model object; the same resetKey keeps the surface mounted.
+    const refreshed = {
+      ...model,
+      parentSegments: [
+        {
+          id: 'inserted-idle',
+          type: 'unattributed' as const,
+          startTime: at(0),
+          endTime: at(0.1),
+          durationMs: 100,
+        },
+        ...model.parentSegments,
+      ],
+    };
+    await rerender(refreshed, undefined, 'session-1');
 
     const retainedWork = element(host, 'swimlane-parent-segment-work');
     expect(retainedWork.getAttribute('aria-describedby')).toBe(

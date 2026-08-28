@@ -102,10 +102,14 @@ export function translateWslMountPath(posixPath: string): string {
   if (process.platform !== 'win32') {
     return posixPath;
   }
-  const match = /^\/mnt\/([a-zA-Z])(\/.*)?$/.exec(posixPath);
-  if (match) {
-    const drive = match[1].toUpperCase();
-    const rest = match[2] ?? '';
+  const driveLetter = posixPath[5];
+  const isAsciiLetter =
+    posixPath.length >= 6 &&
+    ((driveLetter >= 'a' && driveLetter <= 'z') || (driveLetter >= 'A' && driveLetter <= 'Z'));
+  const hasValidSuffix = posixPath.length === 6 || posixPath[6] === '/';
+  if (posixPath.startsWith('/mnt/') && isAsciiLetter && hasValidSuffix) {
+    const drive = driveLetter.toUpperCase();
+    const rest = posixPath.slice(6);
     return `${drive}:${rest}`;
   }
   return posixPath;

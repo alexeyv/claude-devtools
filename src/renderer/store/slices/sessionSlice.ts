@@ -17,6 +17,12 @@ const logger = createLogger('Store:session');
  */
 const projectRefreshGeneration = new Map<string, number>();
 
+/**
+ * Latest initial-fetch generation. A superseded fetch (user clicked another
+ * project before the first response arrived) must not write into state.
+ */
+let sessionsInitialGeneration = 0;
+
 // =============================================================================
 // Slice Interface
 // =============================================================================
@@ -126,6 +132,7 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
 
   // Fetch initial page of sessions (paginated)
   fetchSessionsInitial: async (projectId: string) => {
+    const generation = ++sessionsInitialGeneration;
     set({
       sessionsLoading: true,
       sessionsError: null,
@@ -140,6 +147,25 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         prefilterAll: false,
         metadataLevel: 'light',
       });
+
+      // Cache under the project we actually fetched, even if superseded.
+      get()._sessionCache.set(projectId, {
+        sessions: result.sessions,
+        cursor: result.nextCursor,
+        hasMore: result.hasMore,
+        totalCount: result.totalCount,
+        timestamp: Date.now(),
+      });
+
+      // Drop stale responses: a newer fetch owns the list state now, or the
+      // user has moved to another project (possibly served from cache).
+      const selectedProjectId = get().selectedProjectId;
+      if (
+        generation !== sessionsInitialGeneration ||
+        (selectedProjectId !== null && selectedProjectId !== projectId)
+      ) {
+        return;
+      }
       set({
         sessions: result.sessions,
         sessionsCursor: result.nextCursor,
@@ -148,21 +174,13 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         sessionsLoading: false,
       });
 
-      const cacheProjectId = get().selectedProjectId;
-      if (cacheProjectId) {
-        get()._sessionCache.set(cacheProjectId, {
-          sessions: result.sessions,
-          cursor: result.nextCursor,
-          hasMore: result.hasMore,
-          totalCount: result.totalCount,
-          timestamp: Date.now(),
-        });
-      }
-
       // Load pinned and hidden sessions after fetching session list
       void get().loadPinnedSessions();
       void get().loadHiddenSessions();
     } catch (error) {
+      if (generation !== sessionsInitialGeneration) {
+        return;
+      }
       set({
         sessionsError: error instanceof Error ? error.message : 'Failed to fetch sessions',
         sessionsLoading: false,
@@ -277,8 +295,12 @@ export const createSessionSlice: StateCreator<AppState, [], [], SessionSlice> = 
         metadataLevel: 'light',
       });
 
-      // Drop stale responses from older in-flight refreshes
-      if (projectRefreshGeneration.get(projectId) !== generation) {
+      // Drop stale responses from older in-flight refreshes, or if the user
+      // switched projects while this refresh was in flight.
+      if (
+        projectRefreshGeneration.get(projectId) !== generation ||
+        get().selectedProjectId !== projectId
+      ) {
         return;
       }
 

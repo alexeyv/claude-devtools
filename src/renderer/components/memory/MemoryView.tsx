@@ -46,6 +46,22 @@ interface ListRow {
 const INDEX_FILE = 'MEMORY.md';
 const WIKILINK_PROTOCOL = 'memory:';
 
+function hasUriScheme(value: string): boolean {
+  const separator = value.indexOf(':');
+  if (separator <= 0) return false;
+  for (let index = 0; index < separator; index++) {
+    const character = value[index].toLowerCase();
+    if (character < 'a' || character > 'z') return false;
+  }
+  return true;
+}
+
+function isMarkdownHref(value: string): boolean {
+  const fragmentStart = value.indexOf('#');
+  const path = fragmentStart === -1 ? value : value.slice(0, fragmentStart);
+  return path.toLowerCase().endsWith('.md');
+}
+
 /**
  * Rewrite [[slug]] tokens into ordinary markdown links pointing at a custom
  * `memory:` href. The renderer's anchor component handles navigation.
@@ -205,12 +221,12 @@ export const MemoryView = ({ projectId }: MemoryViewProps): React.JSX.Element =>
       }
       // Bail on any scheme (http:, mailto:, etc.) and any path with a slash —
       // memory layers live in a single flat directory.
-      if (/^[a-z]+:/i.test(href)) return null;
+      if (hasUriScheme(href)) return null;
       if (href.startsWith('#')) return null;
-      const trimmed = href.replace(/^\.\//, '');
+      const trimmed = href.startsWith('./') ? href.slice(2) : href;
       if (trimmed.includes('/') || trimmed.includes('\\')) return null;
       if (!trimmed.toLowerCase().endsWith('.md')) return null;
-      return resolveWikilink(trimmed.replace(/\.md$/i, ''), rows);
+      return resolveWikilink(trimmed.slice(0, -3), rows);
     },
     [rows]
   );
@@ -222,18 +238,16 @@ export const MemoryView = ({ projectId }: MemoryViewProps): React.JSX.Element =>
   const components = useMemo<Components>(
     () => ({
       ...markdownComponents,
-      a: ({ href, children, ...rest }) => {
+      a: ({ href, children }) => {
         const target = resolveLayerHref(typeof href === 'string' ? href : undefined);
         const isLayerLink =
           typeof href === 'string' &&
-          (href.startsWith(WIKILINK_PROTOCOL) ||
-            (/\.md(?:#.*)?$/i.test(href) && !/^[a-z]+:/i.test(href)));
+          (href.startsWith(WIKILINK_PROTOCOL) || (isMarkdownHref(href) && !hasUriScheme(href)));
 
         if (isLayerLink) {
           const resolved = target !== null;
           return (
             <a
-              {...rest}
               href={href}
               onClick={(e): void => {
                 e.preventDefault();
@@ -256,7 +270,6 @@ export const MemoryView = ({ projectId }: MemoryViewProps): React.JSX.Element =>
         // rest of the app uses, and never let the renderer navigate itself.
         return (
           <a
-            {...rest}
             href={href}
             onClick={(e): void => {
               if (typeof href !== 'string') return;

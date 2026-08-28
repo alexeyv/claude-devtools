@@ -38,7 +38,7 @@ const logger = createLogger('Util:jsonl');
 const defaultProvider = new LocalFileSystemProvider();
 
 // Re-export for backwards compatibility
-export { extractCwd, extractFirstUserMessagePreview } from './metadataExtraction';
+export { extractCwd } from './metadataExtraction';
 export { checkMessagesOngoing } from './sessionStateDetection';
 
 // =============================================================================
@@ -170,7 +170,9 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
     uuid: entry.uuid,
     parentUuid,
     type,
-    timestamp: entry.timestamp ? new Date(entry.timestamp) : new Date(),
+    // A missing timestamp becomes an invalid Date rather than "now", so
+    // consumers can detect and skip it instead of measuring against parse time.
+    timestamp: entry.timestamp ? new Date(entry.timestamp) : new Date(NaN),
     role,
     content,
     usage,
@@ -230,7 +232,7 @@ function parseMessageType(type?: string): MessageType | null {
  * Messages without a requestId (user, system, etc.) pass through unchanged.
  * Returns a new array with only the last entry per requestId kept.
  */
-export function deduplicateByRequestId(messages: ParsedMessage[]): ParsedMessage[] {
+function deduplicateByRequestId(messages: ParsedMessage[]): ParsedMessage[] {
   // Map from requestId -> index of last occurrence
   const lastIndexByRequestId = new Map<string, number>();
   for (let i = 0; i < messages.length; i++) {
@@ -340,7 +342,7 @@ export function getTaskCalls(messages: ParsedMessage[]): ToolCall[] {
 }
 
 export interface SessionFileMetadata {
-  firstUserMessage: { text: string; timestamp: string } | null;
+  firstUserMessage: { text: string; timestamp: string | undefined } | null;
   messageCount: number;
   isOngoing: boolean;
   gitBranch: string | null;
@@ -377,8 +379,8 @@ export async function analyzeSessionFileMetadata(
     crlfDelay: Infinity,
   });
 
-  let firstUserMessage: { text: string; timestamp: string } | null = null;
-  let firstCommandMessage: { text: string; timestamp: string } | null = null;
+  let firstUserMessage: { text: string; timestamp: string | undefined } | null = null;
+  let firstCommandMessage: { text: string; timestamp: string | undefined } | null = null;
   let messageCount = 0;
   let hasDisplayableContent = false;
   // After a UserGroup, await the first main-thread assistant message to count the AIGroup
@@ -405,14 +407,17 @@ export async function analyzeSessionFileMetadata(
       continue;
     }
 
+    // parseChatHistoryEntry stays inside the try: a line that is valid JSON
+    // but not an object (null, a number) would otherwise throw and abort the scan.
     let entry: ChatHistoryEntry;
+    let parsed: ParsedMessage | null;
     try {
       entry = JSON.parse(trimmed) as ChatHistoryEntry;
+      parsed = parseChatHistoryEntry(entry);
     } catch {
       continue;
     }
 
-    const parsed = parseChatHistoryEntry(entry);
     if (!parsed) {
       continue;
     }
@@ -457,7 +462,7 @@ export async function analyzeSessionFileMetadata(
             const commandName = commandMatch ? `/${commandMatch[1]}` : '/command';
             firstCommandMessage = {
               text: commandName,
-              timestamp: entry.timestamp ?? new Date().toISOString(),
+              timestamp: entry.timestamp,
             };
           }
         } else {
@@ -465,7 +470,7 @@ export async function analyzeSessionFileMetadata(
           if (sanitized.length > 0) {
             firstUserMessage = {
               text: sanitized.substring(0, 500),
-              timestamp: entry.timestamp ?? new Date().toISOString(),
+              timestamp: entry.timestamp,
             };
           }
         }
@@ -483,7 +488,7 @@ export async function analyzeSessionFileMetadata(
           if (sanitized.length > 0) {
             firstUserMessage = {
               text: sanitized.substring(0, 500),
-              timestamp: entry.timestamp ?? new Date().toISOString(),
+              timestamp: entry.timestamp,
             };
           }
         }

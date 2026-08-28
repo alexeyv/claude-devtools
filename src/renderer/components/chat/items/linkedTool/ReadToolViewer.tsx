@@ -55,7 +55,9 @@ export const ReadToolViewer: React.FC<ReadToolViewerProps> = ({ linkedTool }) =>
       : undefined;
 
   const isMarkdownFile = /\.mdx?$/i.test(filePath);
-  const [viewMode, setViewMode] = React.useState<'code' | 'preview'>(isMarkdownFile ? 'preview' : 'code');
+  const [viewMode, setViewMode] = React.useState<'code' | 'preview'>(
+    isMarkdownFile ? 'preview' : 'code'
+  );
 
   return (
     <div className="space-y-2">

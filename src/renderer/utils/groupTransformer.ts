@@ -55,10 +55,12 @@ const logger = createLogger('Util:groupTransformer');
 /**
  * Regex pattern for detecting slash commands.
  * Matches: /command-name [optional args]
+ * Anchored to the start of a line (indentation allowed) so `and/or`, URLs and
+ * paths never match.
  * Uses non-greedy matching and limited repetition to prevent ReDoS.
  */
 // eslint-disable-next-line security/detect-unsafe-regex -- Pattern is safe: limited to 1000 chars and used on bounded user input
-const COMMAND_PATTERN = /\/([a-z][a-z-]{0,50})(?:\s+(\S[^\n]{0,1000}))?$/gim;
+const COMMAND_PATTERN = /^[ \t]*\/([a-z][a-z-]{0,50})(?:\s+(\S[^\n]{0,1000}))?$/gim;
 
 /**
  * Maximum characters to extract for thinking preview.
@@ -445,7 +447,7 @@ function extractUserGroupContent(message: ParsedMessage): UserGroupContent {
  * @param text - Text to parse for commands
  * @returns Array of CommandInfo objects
  */
-function extractCommands(text: string): CommandInfo[] {
+export function extractCommands(text: string): CommandInfo[] {
   if (!text) return [];
 
   const commands: CommandInfo[] = [];

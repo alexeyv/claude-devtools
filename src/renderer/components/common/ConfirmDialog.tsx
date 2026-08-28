@@ -49,10 +49,17 @@ export async function confirm(opts: {
     // If a previous dialog is open, resolve it as cancelled
     if (globalResolver) {
       globalResolver(false);
+      globalResolver = null;
+    }
+
+    // No dialog mounted: nothing can ever answer, so treat as cancelled.
+    if (!globalSetState) {
+      resolve(false);
+      return;
     }
 
     globalResolver = resolve;
-    globalSetState?.({
+    globalSetState({
       isOpen: true,
       title: opts.title,
       message: opts.message,
@@ -75,6 +82,11 @@ export const ConfirmDialog = (): React.JSX.Element | null => {
     globalSetState = setState;
     return () => {
       globalSetState = null;
+      // Unmounting with a pending prompt: nobody can answer it any more.
+      if (globalResolver) {
+        globalResolver(false);
+        globalResolver = null;
+      }
     };
   }, []);
 

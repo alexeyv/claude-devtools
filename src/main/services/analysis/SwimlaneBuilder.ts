@@ -25,7 +25,7 @@ interface TimedRange {
 
 type AttributedSegmentType = Exclude<SwimlaneSegmentType, 'unattributed'>;
 
-interface EvidenceRange extends TimedRange {
+export interface EvidenceRange extends TimedRange {
   id: string;
   type: AttributedSegmentType;
   requestId?: string;
@@ -39,7 +39,7 @@ interface EvidenceRange extends TimedRange {
   target?: SwimlaneNavigationTarget;
 }
 
-interface RequestRange extends EvidenceRange {
+export interface RequestRange extends EvidenceRange {
   type: 'assistant-output';
   requestId: string;
   metrics: SessionMetrics;
@@ -296,10 +296,7 @@ function buildToolAndHumanRanges(
       }
       if (resultTime === undefined) continue;
       const end = resultTime;
-      const id = namespacedId(
-        namespace,
-        `${isAsk ? 'human-wait' : 'tool-execution'}-${call.id}`
-      );
+      const id = namespacedId(namespace, `${isAsk ? 'human-wait' : 'tool-execution'}-${call.id}`);
       ranges.push({
         id,
         type: isAsk ? 'human-wait' : 'tool-execution',
@@ -326,7 +323,12 @@ function buildToolAndHumanRanges(
       const end = validTime(message.timestamp);
       const parent = message.parentUuid ? messageById.get(message.parentUuid) : undefined;
       const start = parent ? validTime(parent.timestamp) : undefined;
-      if (parent?.type !== 'assistant' || start === undefined || end === undefined || end <= start) {
+      if (
+        parent?.type !== 'assistant' ||
+        start === undefined ||
+        end === undefined ||
+        end <= start
+      ) {
         continue;
       }
       const id = namespacedId(namespace, `human-resume-${parent.uuid}-${message.uuid}`);
@@ -613,13 +615,7 @@ function buildChildRows(
           durationMs: range.end - range.start,
           metrics: { ...process.metrics },
           evidence: evidenceRanges.map(serializeEvidence),
-          segments: buildSegments(
-            range.start,
-            range.end,
-            evidenceRanges,
-            requestRanges,
-            target
-          ),
+          segments: buildSegments(range.start, range.end, evidenceRanges, requestRanges, target),
           target,
         };
       }),
@@ -799,20 +795,65 @@ const segmentSortOrder: Record<SwimlaneSegmentType, number> = {
   unattributed: 5,
 };
 
-function activeEvidence(
-  ranges: EvidenceRange[],
-  start: number,
-  end: number
-): EvidenceRange | undefined {
-  return ranges
-    .filter((range) => range.start <= start && range.end >= end && range.end > range.start)
-    .sort(
-      (left, right) =>
-        evidencePriority[right.type] - evidencePriority[left.type] ||
-        left.end - left.start - (right.end - right.start) ||
-        right.start - left.start ||
-        left.id.localeCompare(right.id)
-    )[0];
+/**
+ * Total order used to pick the winning evidence for an elementary interval:
+ * highest priority, then shortest, then latest start, then id.
+ */
+function compareEvidencePrecedence(left: EvidenceRange, right: EvidenceRange): number {
+  return (
+    evidencePriority[right.type] - evidencePriority[left.type] ||
+    left.end - left.start - (right.end - right.start) ||
+    right.start - left.start ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+/** Minimal binary min-heap over precedence ranks with lazy deletion. */
+class RankHeap {
+  private readonly heap: number[] = [];
+  private readonly removed: boolean[];
+
+  constructor(size: number) {
+    this.removed = new Array<boolean>(size).fill(false);
+  }
+
+  push(rank: number): void {
+    const heap = this.heap;
+    heap.push(rank);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      if (heap[parent] <= heap[index]) break;
+      [heap[parent], heap[index]] = [heap[index], heap[parent]];
+      index = parent;
+    }
+  }
+
+  remove(rank: number): void {
+    this.removed[rank] = true;
+  }
+
+  /** Smallest live rank, or undefined when nothing is active. */
+  peek(): number | undefined {
+    const heap = this.heap;
+    while (heap.length > 0 && this.removed[heap[0]]) {
+      const last = heap.pop()!;
+      if (heap.length === 0) break;
+      heap[0] = last;
+      let index = 0;
+      for (;;) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+        if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+        if (smallest === index) break;
+        [heap[smallest], heap[index]] = [heap[index], heap[smallest]];
+        index = smallest;
+      }
+    }
+    return heap[0];
+  }
 }
 
 function clipEvidenceRanges(
@@ -828,26 +869,52 @@ function clipEvidenceRanges(
   });
 }
 
-function buildSegments(
+export function buildSegments(
   axisStart: number,
   axisEnd: number,
   evidenceRanges: EvidenceRange[],
   requestRanges: RequestRange[],
   defaultTarget?: SwimlaneNavigationTarget
 ): SwimlaneChildSegment[] {
+  // Sweep line: walk the sorted boundary points once, keeping the set of
+  // evidence covering the current elementary interval in a heap ordered by
+  // precedence. Ranks are assigned from a single global precedence sort so
+  // the heap minimum is exactly what the pairwise comparison would choose.
+  const ranked = evidenceRanges
+    .filter((range) => range.end > range.start)
+    .sort(compareEvidencePrecedence);
+  const clip = (value: number): number => Math.max(axisStart, Math.min(axisEnd, value));
+  const entries = ranked
+    .map((range, rank) => ({ rank, range, start: clip(range.start), end: clip(range.end) }))
+    .filter((entry) => entry.end > entry.start);
+  const byStart = [...entries].sort((left, right) => left.start - right.start);
+  const byEnd = [...entries].sort((left, right) => left.end - right.end);
+
   const boundaries = new Set<number>([axisStart, axisEnd]);
   for (const range of evidenceRanges) {
-    boundaries.add(Math.max(axisStart, Math.min(axisEnd, range.start)));
-    boundaries.add(Math.max(axisStart, Math.min(axisEnd, range.end)));
+    boundaries.add(clip(range.start));
+    boundaries.add(clip(range.end));
   }
   const points = [...boundaries].sort((left, right) => left - right);
   const drafts: SegmentDraft[] = [];
+  const active = new RankHeap(ranked.length);
+  let nextStart = 0;
+  let nextEnd = 0;
 
   for (let index = 0; index < points.length - 1; index++) {
     const start = points[index];
     const end = points[index + 1];
     if (end <= start) continue;
-    const evidence = activeEvidence(evidenceRanges, start, end);
+    while (nextEnd < byEnd.length && byEnd[nextEnd].end <= start) {
+      active.remove(byEnd[nextEnd].rank);
+      nextEnd++;
+    }
+    while (nextStart < byStart.length && byStart[nextStart].start <= start) {
+      active.push(byStart[nextStart].rank);
+      nextStart++;
+    }
+    const activeRank = active.peek();
+    const evidence = activeRank === undefined ? undefined : ranked[activeRank];
     const type: SwimlaneSegmentType = evidence?.type ?? 'unattributed';
     const previous = drafts.at(-1);
     if (
@@ -969,13 +1036,7 @@ export function buildSwimlane(
   const axisEnd = axisRange?.end ?? EPOCH;
   const childTargets = buildChildTargets(chunks);
   const childRanges = linkedChildRanges(processes, messages, childTargets);
-  const childRows = buildChildRows(
-    processes,
-    mainMessages,
-    axisStart,
-    childTargets,
-    childRanges
-  );
+  const childRows = buildChildRows(processes, mainMessages, axisStart, childTargets, childRanges);
   const requestRanges = buildRequestRanges(chunks, mainMessages);
   const modelResponseRanges = buildModelResponseRanges(mainMessages, requestRanges);
   const toolAndHuman = buildToolAndHumanRanges(mainMessages);

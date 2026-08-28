@@ -210,6 +210,22 @@ export default defineConfig([
     },
   },
 
+  // Repository maintenance and fixture-analysis CLIs
+  {
+    name: 'scripts',
+    files: ['scripts/**/*.ts'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      // These tools exist to inspect and copy paths selected by the operator.
+      'security/detect-non-literal-fs-filename': 'off',
+      'security/detect-non-literal-regexp': 'off',
+    },
+  },
+
   // Preload script (Electron bridge)
   {
     name: 'electron-preload',

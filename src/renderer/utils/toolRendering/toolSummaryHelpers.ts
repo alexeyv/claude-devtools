@@ -5,6 +5,7 @@
  */
 
 import { getBaseName } from '@renderer/utils/pathUtils';
+import { type AgentPlatform, getToolDisplayName, getToolKind } from '@shared/utils/toolIdentity';
 
 /**
  * Truncates a string to a maximum length with ellipsis.
@@ -15,9 +16,105 @@ function truncate(str: string, maxLength: number): string {
 }
 
 /**
- * Generates a human-readable summary for a tool call.
+ * Summary for a tool from a platform whose names this module does not enumerate.
+ * Keyed on `ToolKind` so a tool keeps its own name while still getting a
+ * meaningful one-line summary.
  */
-export function getToolSummary(toolName: string, input: Record<string, unknown>): string {
+function getSummaryByKind(
+  toolName: string,
+  input: Record<string, unknown>,
+  platform: AgentPlatform
+): string {
+  const displayName = getToolDisplayName(toolName);
+
+  switch (getToolKind(toolName, platform)) {
+    case 'shell': {
+      const command = input.command ?? input.cmd;
+      if (typeof command === 'string' && command.length > 0) return truncate(command, 50);
+
+      // Tools that drive an already-running shell identify it by session.
+      const session = input.session_id;
+      if (typeof session === 'string' || typeof session === 'number') {
+        return `${displayName} → session ${session}`;
+      }
+
+      return displayName;
+    }
+
+    case 'file-read':
+    case 'file-write':
+    case 'image': {
+      const filePath = input.file_path ?? input.path ?? input.filename;
+      if (typeof filePath === 'string') return getBaseName(filePath);
+      return displayName;
+    }
+
+    case 'file-edit': {
+      const filePath = input.file_path ?? input.path;
+      if (typeof filePath !== 'string') return displayName;
+
+      const action = input.patch_action;
+      const fileName = getBaseName(filePath);
+      return typeof action === 'string' ? `${action} ${fileName}` : fileName;
+    }
+
+    case 'todo': {
+      const description = input.description ?? input.explanation;
+      if (typeof description === 'string' && description.length > 0) {
+        return truncate(description, 50);
+      }
+
+      const stepCount = input.step_count;
+      if (typeof stepCount === 'number') return `${stepCount} steps`;
+
+      return displayName;
+    }
+
+    case 'spawn-agent': {
+      const description = input.description ?? input.name;
+      if (typeof description === 'string') return truncate(description, 50);
+      return displayName;
+    }
+
+    case 'agent-comms': {
+      const target = input.agent_path ?? input.recipient ?? input.agent;
+      if (typeof target === 'string') return `${displayName} → ${target}`;
+      return displayName;
+    }
+
+    case 'mcp': {
+      const query = input.query ?? input.path ?? input.name;
+      if (typeof query === 'string') return truncate(query, 50);
+      return displayName;
+    }
+
+    case 'web-search':
+    case 'web-fetch': {
+      const query = input.query ?? input.url;
+      if (typeof query === 'string') return truncate(query, 50);
+      return displayName;
+    }
+
+    default:
+      return displayName;
+  }
+}
+
+/**
+ * Generates a human-readable summary for a tool call.
+ *
+ * `platform` selects the naming the session was recorded with; tools keep
+ * their native names, so only the summary logic differs.
+ */
+export function getToolSummary(
+  toolName: string,
+  input: Record<string, unknown>,
+  platform: AgentPlatform = 'claude'
+): string {
+  if (platform !== 'claude') {
+    return getSummaryByKind(toolName, input, platform);
+  }
+
   switch (toolName) {
     case 'Edit': {
       const filePath = input.file_path as string | undefined;

@@ -28,10 +28,13 @@ export function buildSemanticStepGroups(steps: SemanticStep[]): SemanticStepGrou
   // Build groups
   for (const [messageId, groupSteps] of stepsByGroup) {
     const startTime = groupSteps[0].startTime;
-    const endTimes = groupSteps
-      .map((s) => s.endTime ?? new Date(s.startTime.getTime() + s.durationMs))
-      .map((d) => d.getTime());
-    const endTime = new Date(Math.max(...endTimes));
+    // Loop instead of Math.max spread to avoid stack overflow on large groups
+    let endMs = Number.NEGATIVE_INFINITY;
+    for (const s of groupSteps) {
+      const t = (s.endTime ?? new Date(s.startTime.getTime() + s.durationMs)).getTime();
+      if (!isNaN(t) && t > endMs) endMs = t;
+    }
+    const endTime = new Date(endMs === Number.NEGATIVE_INFINITY ? startTime.getTime() : endMs);
     const totalDuration = groupSteps.reduce((sum, s) => sum + s.durationMs, 0);
 
     groups.push({

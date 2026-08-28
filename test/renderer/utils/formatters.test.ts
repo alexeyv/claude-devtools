@@ -29,6 +29,11 @@ describe('formatters', () => {
       expect(formatDuration(179_600)).toBe('3m 0s');
     });
 
+    it('clamps negative durations to zero', () => {
+      expect(formatDuration(-1)).toBe('0ms');
+      expect(formatDuration(-90_000)).toBe('0ms');
+    });
+
     it('should round milliseconds', () => {
       expect(formatDuration(499.7)).toBe('500ms');
     });

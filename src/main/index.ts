@@ -17,15 +17,16 @@ import {
   WINDOW_ZOOM_FACTOR_CHANGED_CHANNEL,
 } from '@shared/constants';
 import { createLogger } from '@shared/utils/logger';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { existsSync } from 'fs';
 import { totalmem } from 'os';
 import { join } from 'path';
 
 import { initializeIpcHandlers, removeIpcHandlers } from './ipc/handlers';
+import { resolveClaudeRootOverride } from './utils/claudeRootOverride';
 import { parseCliArgs } from './utils/cliArgs';
 import { getProjectsBasePath, getTodosBasePath } from './utils/pathDecoder';
-import { resolveLaunchTarget } from './utils/sessionLaunchTarget';
+import { formatSessionLaunchError, resolveLaunchTarget } from './utils/sessionLaunchTarget';
 
 import type { SessionLaunchTarget } from '@shared/types/api';
 
@@ -111,6 +112,7 @@ let notificationManager: NotificationManager;
 let updaterService: UpdaterService;
 let sshConnectionManager: SshConnectionManager;
 let httpServer: HttpServer;
+let cliClaudeRootOverride: { projectsDir: string; todosDir: string } | null = null;
 
 // File watcher event cleanup functions
 let fileChangeCleanup: (() => void) | null = null;
@@ -219,65 +221,116 @@ function onContextSwitched(context: ServiceContext): void {
  */
 function reconfigureLocalContextForClaudeRoot(): void {
   try {
-    const currentLocal = contextRegistry.get('local');
-    if (!currentLocal) {
-      logger.error('Cannot reconfigure local context: local context not found');
-      return;
-    }
-
-    const wasLocalActive = contextRegistry.getActiveContextId() === 'local';
-    const projectsDir = getProjectsBasePath();
-    const todosDir = getTodosBasePath();
-
-    logger.info(`Reconfiguring local context: projectsDir=${projectsDir}, todosDir=${todosDir}`);
-
-    if (wasLocalActive) {
-      currentLocal.stopFileWatcher();
-    }
-
-    const replacementLocal = new ServiceContext({
-      id: 'local',
-      type: 'local',
-      fsProvider: new LocalFileSystemProvider(),
-      projectsDir,
-      todosDir,
-    });
-
-    if (notificationManager) {
-      replacementLocal.fileWatcher.setNotificationManager(notificationManager);
-    }
-    replacementLocal.start();
-
-    if (!wasLocalActive) {
-      replacementLocal.stopFileWatcher();
-    }
-
-    contextRegistry.replaceContext('local', replacementLocal);
-
-    if (wasLocalActive) {
-      wireFileWatcherEvents(replacementLocal);
-    }
+    const projectsDir = cliClaudeRootOverride?.projectsDir ?? getProjectsBasePath();
+    const todosDir = cliClaudeRootOverride?.todosDir ?? getTodosBasePath();
+    replaceLocalContext(projectsDir, todosDir);
   } catch (error) {
     logger.error('Failed to reconfigure local context for Claude root change:', error);
   }
 }
 
+function replaceLocalContext(projectsDir: string, todosDir: string): void {
+  const currentLocal = contextRegistry.get('local');
+  if (!currentLocal) {
+    throw new Error('Cannot reconfigure local context: local context not found');
+  }
+
+  const wasLocalActive = contextRegistry.getActiveContextId() === 'local';
+  logger.info(`Reconfiguring local context: projectsDir=${projectsDir}, todosDir=${todosDir}`);
+
+  if (wasLocalActive) currentLocal.stopFileWatcher();
+
+  const replacementLocal = new ServiceContext({
+    id: 'local',
+    type: 'local',
+    fsProvider: new LocalFileSystemProvider(),
+    projectsDir,
+    todosDir,
+  });
+  if (notificationManager) {
+    replacementLocal.fileWatcher.setNotificationManager(notificationManager);
+  }
+  replacementLocal.start();
+  if (!wasLocalActive) replacementLocal.stopFileWatcher();
+
+  contextRegistry.replaceContext('local', replacementLocal);
+  if (wasLocalActive) wireFileWatcherEvents(replacementLocal);
+}
+
 /**
  * Resolves `--session` / `--project` arguments into an openable session.
- * Never throws: unusable arguments resolve to null and startup continues normally.
+ * Reports unusable arguments in a native dialog and lets startup continue.
  *
  * @param argv - argv of the launching process
  * @returns The session to open, or null when none was requested or found
  */
-async function resolveLaunchTargetFromArgv(argv: string[]): Promise<SessionLaunchTarget | null> {
+async function resolveLaunchTargetFromArgv(
+  argv: string[],
+  workingDirectory: string
+): Promise<SessionLaunchTarget | null> {
+  const args = parseCliArgs(argv);
+  if (!args.session && !args.root && !args.error) {
+    return null;
+  }
+
   try {
-    const args = parseCliArgs(argv);
-    if (!args.sessionId) {
-      return null;
+    if (args.error) throw new Error(args.error);
+
+    if (args.root) {
+      const override = await resolveClaudeRootOverride(args.root, workingDirectory);
+      cliClaudeRootOverride = {
+        projectsDir: override.projectsDir,
+        todosDir: override.todosDir,
+      };
+      replaceLocalContext(override.projectsDir, override.todosDir);
+      logger.info(`Using process-local Claude root override: ${override.rootDir}`);
+
+      // A root-only second launch means "show this Claude home". Reload the
+      // existing renderer against the replacement local context so it cannot
+      // keep displaying the old root's cached front page.
+      if (!args.session && mainWindow && !mainWindow.isDestroyed()) {
+        if (contextRegistry.getActiveContextId() !== 'local') {
+          const { current } = contextRegistry.switch('local');
+          wireFileWatcherEvents(current);
+        }
+        mainWindow.webContents.reload();
+      }
     }
-    return await resolveLaunchTarget(contextRegistry.getActive().projectScanner, args);
+
+    const localContext = contextRegistry.get('local');
+    if (!localContext) throw new Error('The local session service is unavailable');
+    const activeContext = args.root ? localContext : contextRegistry.getActive();
+
+    if (!args.session) return null;
+
+    return await resolveLaunchTarget(activeContext.projectScanner, args, {
+      workingDirectory,
+      fileLocator: localContext.projectScanner,
+      idContextId: activeContext.id,
+      fileContextId: localContext.id,
+    });
   } catch (error) {
     logger.error('Failed to resolve session from command line:', error);
+    const reason = error instanceof Error ? error.message : String(error);
+    const detail = formatSessionLaunchError(reason, workingDirectory);
+    const sessionRequested = argv.some(
+      (arg) => arg === '--session' || arg.startsWith('--session=')
+    );
+    const options = {
+      type: 'error' as const,
+      title: sessionRequested ? 'Unable to open session' : 'Unable to use Claude root',
+      message: sessionRequested
+        ? 'The requested session could not be opened.'
+        : 'The requested Claude root could not be used.',
+      detail,
+      buttons: ['OK'],
+      noLink: true,
+    };
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      await dialog.showMessageBox(mainWindow, options);
+    } else {
+      await dialog.showMessageBox(options);
+    }
     return null;
   }
 }
@@ -302,9 +355,9 @@ function focusMainWindow(): void {
  * Handles a second launch of the app: focuses the running window and opens the
  * session its command line asked for, instead of starting another instance.
  */
-async function handleSecondInstance(argv: string[]): Promise<void> {
+async function handleSecondInstance(argv: string[], workingDirectory: string): Promise<void> {
   const hadWindow = !!mainWindow && !mainWindow.isDestroyed();
-  const targetPromise = resolveLaunchTargetFromArgv(argv);
+  const targetPromise = resolveLaunchTargetFromArgv(argv, workingDirectory);
 
   if (!hadWindow) {
     // A fresh window pulls the target itself once its renderer boots.
@@ -682,7 +735,7 @@ void app.whenReady().then(async () => {
 
     // Start resolving `--session` while the window boots; the renderer picks
     // the result up via SESSION_GET_LAUNCH_TARGET once it is ready.
-    pendingLaunchTarget = resolveLaunchTargetFromArgv(process.argv);
+    pendingLaunchTarget = resolveLaunchTargetFromArgv(process.argv, process.cwd());
 
     // Apply configuration settings
     const config = configManager.getConfig();
@@ -728,8 +781,8 @@ void app.whenReady().then(async () => {
 /**
  * Second launch handler - forwards the new command line to the running window.
  */
-app.on('second-instance', (_event, argv) => {
-  void handleSecondInstance(argv);
+app.on('second-instance', (_event, argv, workingDirectory) => {
+  void handleSecondInstance(argv, workingDirectory);
 });
 
 /**

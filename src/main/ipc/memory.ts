@@ -62,11 +62,11 @@ export function removeMemoryHandlers(ipcMain: IpcMain): void {
 // Result types
 // =============================================================================
 
-export type MemoryReadFileResult =
+type MemoryReadFileResult =
   | { success: true; content: string; path: string }
   | { success: false; error: string };
 
-export type MemoryOpenResult = { success: true } | { success: false; error: string };
+type MemoryOpenResult = { success: true } | { success: false; error: string };
 
 // =============================================================================
 // Handlers

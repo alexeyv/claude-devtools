@@ -33,6 +33,7 @@ export interface MockElectronAPI {
   getSubagentDetail: ReturnType<typeof vi.fn>;
   searchSessions: ReturnType<typeof vi.fn>;
   readClaudeMdFiles: ReturnType<typeof vi.fn>;
+  readAgentConfigs: ReturnType<typeof vi.fn>;
   readDirectoryClaudeMd: ReturnType<typeof vi.fn>;
   readMentionedFile: ReturnType<typeof vi.fn>;
   validateMentions: ReturnType<typeof vi.fn>;
@@ -101,6 +102,7 @@ export function createMockElectronAPI(): MockElectronAPI {
       query: '',
     }),
     readClaudeMdFiles: vi.fn().mockResolvedValue({}),
+    readAgentConfigs: vi.fn().mockResolvedValue({}),
     readDirectoryClaudeMd: vi.fn().mockResolvedValue({
       path: '',
       exists: false,

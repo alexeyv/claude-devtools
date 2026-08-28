@@ -159,8 +159,9 @@ export class SshConnectionManager extends EventEmitter {
       const { client, sftp } = chainResult;
       this.client = client;
       this.provider = new SshFileSystemProvider(sftp);
-      this.remoteProjectsPath = await this.resolveRemoteProjectsPath(config.username);
 
+      // Attach listeners before any await: an 'error' emitted while we wait
+      // on the remote path lookup would otherwise be unhandled and crash main.
       client.on('end', () => {
         logger.info('SSH connection ended');
         this.handleDisconnect();
@@ -174,6 +175,8 @@ export class SshConnectionManager extends EventEmitter {
         this.lastError = err.message;
         this.setState('error');
       });
+
+      this.remoteProjectsPath = await this.resolveRemoteProjectsPath(config.username);
 
       this.setState('connected');
       logger.info(`SSH connected to ${config.host}:${config.port}`);
@@ -501,6 +504,23 @@ export class SshConnectionManager extends EventEmitter {
     const candidates: AuthCandidate[] = [];
     const usedKeyPaths = new Set<string>();
 
+    // An explicitly configured key is the user's stated intent, so it goes first.
+    if (config.privateKeyPath?.trim()) {
+      const keyPath = expandHome(config.privateKeyPath.trim());
+      const loaded = await tryLoadKey(keyPath);
+      if (loaded.kind === 'ok') {
+        candidates.push({ kind: 'privateKey', data: loaded.data, label: `configured ${keyPath}` });
+      } else {
+        logger.warn(`Configured private key ${keyPath} skipped: ${loaded.reason}`);
+        attempts.push({
+          source: `configured ${keyPath}`,
+          outcome: 'skipped',
+          reason: loaded.reason,
+        });
+      }
+      usedKeyPaths.add(keyPath);
+    }
+
     // Agents — every accessible agent gets its own candidate. Many users have
     // both a system ssh-agent AND a 1Password agent, with the right key on
     // only one. Walking each in turn (within the same TCP/SSH session via
@@ -827,6 +847,12 @@ function probeTcp(
       resolve({ ok: false, reason: err.message });
     });
   });
+}
+
+function expandHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
 }
 
 async function pathExists(p: string): Promise<boolean> {

@@ -14,6 +14,7 @@ export type { SemanticStep };
 import type { ClaudeMdStats } from './claudeMd';
 import type { CompactionTokenDelta } from './contextInjection';
 import type { ModelInfo } from '@shared/utils/modelParser';
+import type { AgentPlatform } from '@shared/utils/toolIdentity';
 
 // =============================================================================
 // Expansion Levels
@@ -151,8 +152,10 @@ export interface AIGroupSummary {
 export interface LinkedToolItem {
   /** Tool call ID */
   id: string;
-  /** Tool name */
+  /** Tool name, exactly as the recording platform named it */
   name: string;
+  /** Platform that recorded the call; selects naming and summary rules */
+  platform?: AgentPlatform;
   /** Tool input parameters */
   input: Record<string, unknown>;
   /**

@@ -105,7 +105,11 @@ export const TabContextMenu = ({
           onClick={handleClick(onCloseSelectedTabs)}
         />
       ) : (
-        <MenuItem label="Close Tab" shortcut={formatShortcut('W')} onClick={handleClick(onCloseTab)} />
+        <MenuItem
+          label="Close Tab"
+          shortcut={formatShortcut('W')}
+          onClick={handleClick(onCloseTab)}
+        />
       )}
       <MenuItem label="Close Other Tabs" onClick={handleClick(onCloseOtherTabs)} />
       <div className="mx-2 my-1 border-t" style={{ borderColor: 'var(--color-border)' }} />
@@ -138,7 +142,11 @@ export const TabContextMenu = ({
         </>
       )}
       <div className="mx-2 my-1 border-t" style={{ borderColor: 'var(--color-border)' }} />
-      <MenuItem label="Close All Tabs" shortcut={formatShortcut('W', { shift: true })} onClick={handleClick(onCloseAllTabs)} />
+      <MenuItem
+        label="Close All Tabs"
+        shortcut={formatShortcut('W', { shift: true })}
+        onClick={handleClick(onCloseAllTabs)}
+      />
     </div>
   );
 };

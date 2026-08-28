@@ -41,7 +41,10 @@ import {
   isValidEncodedPath,
 } from '@main/utils/pathDecoder';
 import { createLogger } from '@shared/utils/logger';
+import { createHash } from 'crypto';
+import * as os from 'os';
 import * as path from 'path';
+import * as readline from 'readline';
 
 import { LocalFileSystemProvider } from '../infrastructure/LocalFileSystemProvider';
 
@@ -53,11 +56,13 @@ import { subprojectRegistry } from './SubprojectRegistry';
 import { WorktreeGrouper } from './WorktreeGrouper';
 
 import type { FileSystemProvider, FsDirent } from '../infrastructure/FileSystemProvider';
+import type { SessionLaunchTarget } from '@shared/types/api';
 
 const logger = createLogger('Discovery:ProjectScanner');
 
 /** How long to reuse the cached project list for search (ms) */
 const SEARCH_PROJECT_CACHE_TTL_MS = 30_000;
+const SAFE_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 
 export class ProjectScanner {
   private readonly projectsDir: string;
@@ -73,6 +78,10 @@ export class ProjectScanner {
       size: number;
       metadata: Awaited<ReturnType<typeof analyzeSessionFileMetadata>>;
     }
+  >();
+  private readonly registeredSessionFiles = new Map<
+    string,
+    { filePath: string; projectPath: string; subagentsPath: string }
   >();
 
   /** Cached project list for search — avoids re-scanning disk on every query */
@@ -97,6 +106,121 @@ export class ProjectScanner {
     this.subagentLocator = new SubagentLocator(this.projectsDir, this.fsProvider);
     this.sessionSearcher = new SessionSearcher(this.projectsDir, this.fsProvider);
     this.projectPathResolver = new ProjectPathResolver(this.projectsDir, this.fsProvider);
+  }
+
+  private sessionFileKey(projectId: string, sessionId: string): string {
+    return `${projectId}\0${sessionId}`;
+  }
+
+  private registeredSessionFile(
+    projectId: string,
+    sessionId: string
+  ): { filePath: string; projectPath: string; subagentsPath: string } | undefined {
+    return this.registeredSessionFiles.get(this.sessionFileKey(projectId, sessionId));
+  }
+
+  /**
+   * Resolve and register an explicitly supplied local session log file.
+   * Returns null only when the path does not exist; an existing but unusable
+   * file throws a reason suitable for the command-line error dialog.
+   */
+  async resolveSessionFile(
+    sessionPath: string,
+    workingDirectory: string
+  ): Promise<SessionLaunchTarget | null> {
+    if (this.fsProvider.type !== 'local') {
+      return null;
+    }
+
+    const expanded =
+      sessionPath === '~' || sessionPath.startsWith(`~${path.sep}`)
+        ? path.join(os.homedir(), sessionPath.slice(2))
+        : sessionPath;
+    const filePath = path.resolve(workingDirectory, expanded);
+    if (!(await this.fsProvider.exists(filePath))) {
+      return null;
+    }
+
+    const stat = await this.fsProvider.stat(filePath);
+    if (!stat.isFile()) {
+      throw new Error(`${filePath} exists but is not a file`);
+    }
+    if (stat.size === 0) {
+      throw new Error(`${filePath} is empty`);
+    }
+
+    const inspected = await this.inspectSessionFile(filePath);
+    if (!inspected.recognized) {
+      throw new Error(`${filePath} does not contain recognizable Claude session records`);
+    }
+
+    const filenameId = extractSessionId(path.basename(filePath));
+    const sessionId = inspected.sessionId ?? filenameId;
+    const safeSessionId = SAFE_SESSION_ID.test(sessionId)
+      ? sessionId
+      : `file-${createHash('sha256').update(filePath).digest('hex').slice(0, 24)}`;
+    const projectId = `-session-file-${createHash('sha256')
+      .update(filePath)
+      .digest('hex')
+      .slice(0, 24)}`;
+    const projectPath = inspected.cwd ?? path.dirname(filePath);
+
+    this.registeredSessionFiles.set(this.sessionFileKey(projectId, safeSessionId), {
+      filePath,
+      projectPath,
+      subagentsPath: path.join(path.dirname(filePath), safeSessionId, 'subagents'),
+    });
+
+    // Exercise the same metadata path as normal navigation now, so parse and
+    // permission errors are reported before the renderer opens a broken tab.
+    await this.getSession(projectId, safeSessionId);
+    return { projectId, sessionId: safeSessionId };
+  }
+
+  private async inspectSessionFile(
+    filePath: string
+  ): Promise<{ recognized: boolean; sessionId?: string; cwd?: string }> {
+    const stream = this.fsProvider.createReadStream(filePath, { encoding: 'utf8' });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let recognized = false;
+    let sessionId: string | undefined;
+    let cwd: string | undefined;
+    let linesRead = 0;
+
+    try {
+      for await (const line of lines) {
+        if (++linesRead > 500) break;
+        if (!line.trim()) continue;
+        let entry: Record<string, unknown>;
+        try {
+          entry = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (!entry || typeof entry !== 'object') continue;
+
+        if (typeof entry.sessionId === 'string' && SAFE_SESSION_ID.test(entry.sessionId)) {
+          sessionId ??= entry.sessionId;
+          recognized = true;
+        }
+        if (typeof entry.cwd === 'string' && entry.cwd.trim()) {
+          cwd ??= entry.cwd;
+        }
+        if (
+          (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'system') &&
+          entry.message &&
+          typeof entry.message === 'object'
+        ) {
+          recognized = true;
+        }
+        if (recognized && sessionId && cwd) break;
+      }
+    } finally {
+      lines.close();
+      stream.destroy();
+    }
+
+    return { recognized, sessionId, cwd };
   }
 
   // ===========================================================================
@@ -738,7 +862,7 @@ export class ProjectScanner {
 
     // Check for subagents and load task list data in parallel
     const [hasSubagents, todoData] = await Promise.all([
-      this.subagentLocator.hasSubagents(projectId, sessionId),
+      this.hasSubagents(projectId, sessionId),
       this.loadTodoData(sessionId),
     ]);
     const metadataLevel: SessionMetadataLevel = 'deep';
@@ -906,7 +1030,9 @@ export class ProjectScanner {
     }
 
     const metadataLevel: SessionMetadataLevel = 'deep';
-    const decodedPath = await this.resolveProjectPathForId(projectId);
+    const decodedPath =
+      this.registeredSessionFile(projectId, sessionId)?.projectPath ??
+      (await this.resolveProjectPathForId(projectId));
     return this.buildSessionForListing(metadataLevel, projectId, sessionId, filePath, decodedPath);
   }
 
@@ -926,7 +1052,9 @@ export class ProjectScanner {
 
     const metadataLevel: SessionMetadataLevel =
       options?.metadataLevel ?? (this.fsProvider.type === 'ssh' ? 'light' : 'deep');
-    const decodedPath = await this.resolveProjectPathForId(projectId);
+    const decodedPath =
+      this.registeredSessionFile(projectId, sessionId)?.projectPath ??
+      (await this.resolveProjectPathForId(projectId));
     return this.buildSessionForListing(metadataLevel, projectId, sessionId, filePath, decodedPath);
   }
 
@@ -962,6 +1090,8 @@ export class ProjectScanner {
    * Gets the path to the session JSONL file.
    */
   getSessionPath(projectId: string, sessionId: string): string {
+    const registered = this.registeredSessionFile(projectId, sessionId);
+    if (registered) return registered.filePath;
     return buildSessionPath(this.projectsDir, projectId, sessionId);
   }
 
@@ -969,6 +1099,8 @@ export class ProjectScanner {
    * Gets the path to the subagents directory.
    */
   getSubagentsPath(projectId: string, sessionId: string): string {
+    const registered = this.registeredSessionFile(projectId, sessionId);
+    if (registered) return registered.subagentsPath;
     return buildSubagentsPath(this.projectsDir, projectId, sessionId);
   }
 
@@ -1021,6 +1153,15 @@ export class ProjectScanner {
    * Checks if a session has a subagents directory (async).
    */
   async hasSubagents(projectId: string, sessionId: string): Promise<boolean> {
+    const registered = this.registeredSessionFile(projectId, sessionId);
+    if (registered) {
+      if (!(await this.fsProvider.exists(registered.subagentsPath))) return false;
+      const entries = await this.fsProvider.readdir(registered.subagentsPath);
+      return entries.some(
+        (entry) =>
+          entry.isFile() && entry.name.startsWith('agent-') && entry.name.endsWith('.jsonl')
+      );
+    }
     return this.subagentLocator.hasSubagents(projectId, sessionId);
   }
 
@@ -1029,6 +1170,17 @@ export class ProjectScanner {
    * Returns NEW structure files first, then OLD structure files.
    */
   async listSubagentFiles(projectId: string, sessionId: string): Promise<string[]> {
+    const registered = this.registeredSessionFile(projectId, sessionId);
+    if (registered) {
+      if (!(await this.fsProvider.exists(registered.subagentsPath))) return [];
+      const entries = await this.fsProvider.readdir(registered.subagentsPath);
+      return entries
+        .filter(
+          (entry) =>
+            entry.isFile() && entry.name.startsWith('agent-') && entry.name.endsWith('.jsonl')
+        )
+        .map((entry) => path.join(registered.subagentsPath, entry.name));
+    }
     return this.subagentLocator.listSubagentFiles(projectId, sessionId);
   }
 

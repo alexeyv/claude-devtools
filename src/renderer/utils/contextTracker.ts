@@ -10,7 +10,7 @@
  */
 
 import { estimateTokens } from '@shared/utils/tokenFormatting';
-import { isSpawnToolName } from '@shared/utils/toolNames';
+import { isSpawnToolName } from '@shared/utils/toolIdentity';
 
 import { MAX_MENTIONED_FILE_TOKENS } from '../types/contextInjection';
 

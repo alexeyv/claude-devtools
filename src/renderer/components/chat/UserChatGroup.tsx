@@ -509,10 +509,7 @@ const UserChatGroupInner = ({ userGroup }: Readonly<UserChatGroupProps>): React.
                   border: '1px solid var(--card-border)',
                 }}
               >
-                <StatusIcon
-                  className="mt-0.5 size-3.5 shrink-0"
-                  style={{ color: statusColor }}
-                />
+                <StatusIcon className="mt-0.5 size-3.5 shrink-0" style={{ color: statusColor }} />
                 <div className="min-w-0 flex-1 space-y-0.5">
                   <div
                     className="text-xs font-medium leading-snug"
@@ -520,7 +517,10 @@ const UserChatGroupInner = ({ userGroup }: Readonly<UserChatGroupProps>): React.
                   >
                     {cmdName}
                   </div>
-                  <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+                  <div
+                    className="flex items-center gap-2 text-[10px]"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
                     <span className="capitalize">{notif.status}</span>
                     {exitCode != null && <span>exit {exitCode}</span>}
                     {notif.outputFile && (

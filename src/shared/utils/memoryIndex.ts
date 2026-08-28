@@ -25,11 +25,26 @@ export interface MemoryIndex {
   orphanFiles: string[];
 }
 
-// Bounded character classes throughout (no `.+?`) to guarantee linear-time
-// matching even on adversarial input. The negated classes can't include
-// their own terminator (`]` or `)`), so the engine never backtracks.
-// eslint-disable-next-line sonarjs/slow-regex -- bounded negated char classes, no backtracking
-const ENTRY_REGEX = /^\s*-\s*\[([^\]\n]+)\]\(([^)\n]+\.md)\)\s*(?:[—–-]\s*(.*))?$/;
+function parseEntryLine(line: string): { title: string; file: string; hook: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('-')) return null;
+
+  const link = trimmed.slice(1).trimStart();
+  if (!link.startsWith('[')) return null;
+  const titleEnd = link.indexOf('](');
+  if (titleEnd <= 1) return null;
+  const fileEnd = link.indexOf(')', titleEnd + 2);
+  if (fileEnd === -1) return null;
+
+  const title = link.slice(1, titleEnd);
+  const file = link.slice(titleEnd + 2, fileEnd);
+  if (!file.endsWith('.md') || file.includes('\n')) return null;
+
+  const suffix = link.slice(fileEnd + 1).trim();
+  if (!suffix) return { title, file, hook: '' };
+  if (!['—', '–', '-'].includes(suffix[0])) return null;
+  return { title, file, hook: suffix.slice(1).trimStart() };
+}
 
 export function parseMemoryIndex(markdown: string, dirListing: readonly string[]): MemoryIndex {
   const entries: MemoryEntry[] = [];
@@ -37,14 +52,13 @@ export function parseMemoryIndex(markdown: string, dirListing: readonly string[]
   const lines = markdown.split(/\r?\n/);
 
   lines.forEach((line, idx) => {
-    const match = ENTRY_REGEX.exec(line);
-    if (!match) return;
-    const [, title, file, hook] = match;
-    if (!title || !file) return;
+    const entry = parseEntryLine(line);
+    if (!entry) return;
+    const { title, file, hook } = entry;
     entries.push({
       title: title.trim(),
       file: file.trim(),
-      hook: (hook ?? '').trim(),
+      hook: hook.trim(),
       lineNumber: idx + 1,
     });
     seenFiles.add(file.trim());

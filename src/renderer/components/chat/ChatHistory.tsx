@@ -1045,7 +1045,11 @@ export const ChatHistory = ({ tabId }: ChatHistoryProps): JSX.Element => {
           </div>
 
           {isSwimlaneActive && activeSwimlane && (
-            <SwimlaneSurface swimlane={activeSwimlane} onTarget={handleSwimlaneTarget} />
+            <SwimlaneSurface
+              swimlane={activeSwimlane}
+              onTarget={handleSwimlaneTarget}
+              resetKey={sessionDetail?.session?.id}
+            />
           )}
         </div>
 

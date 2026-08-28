@@ -3,7 +3,11 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
-import { analyzeSessionFileMetadata, calculateMetrics } from '../../../src/main/utils/jsonl';
+import {
+  analyzeSessionFileMetadata,
+  calculateMetrics,
+  parseJsonlLine,
+} from '../../../src/main/utils/jsonl';
 import type { ParsedMessage } from '../../../src/main/types';
 
 // Helper to create a minimal ParsedMessage
@@ -136,7 +140,50 @@ describe('jsonl', () => {
     });
   });
 
+  describe('parseJsonlLine', () => {
+    it('should yield an invalid Date when the entry has no timestamp', () => {
+      const parsed = parseJsonlLine(
+        JSON.stringify({
+          type: 'user',
+          uuid: 'u1',
+          message: { role: 'user', content: 'hi' },
+          isMeta: false,
+        })
+      );
+      expect(parsed).not.toBeNull();
+      expect(Number.isNaN(parsed!.timestamp.getTime())).toBe(true);
+    });
+  });
+
   describe('analyzeSessionFileMetadata', () => {
+    it('should skip lines that are valid JSON but not objects', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-meta-'));
+      try {
+        const filePath = path.join(tempDir, 'session.jsonl');
+        const lines = [
+          'null',
+          '123',
+          '"string"',
+          JSON.stringify({
+            type: 'user',
+            uuid: 'u1',
+            message: { role: 'user', content: 'after junk' },
+            isMeta: false,
+          }),
+        ];
+        fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+
+        const result = await analyzeSessionFileMetadata(filePath);
+
+        expect(result.firstUserMessage?.text).toBe('after junk');
+        // Missing timestamp is reported as absent rather than as "now".
+        expect(result.firstUserMessage?.timestamp).toBeUndefined();
+        expect(result.messageCount).toBe(1);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('should extract first message, count, ongoing state, and git branch in one pass', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-meta-'));
       try {

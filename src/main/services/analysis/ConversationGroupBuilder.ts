@@ -105,6 +105,14 @@ function collectAIResponses(
  * Separate Task executions from regular tool executions.
  * Task tools spawn subagents, so we track them separately to avoid duplication.
  */
+/**
+ * Milliseconds between two timestamps, or 0 when either is an invalid Date.
+ */
+function elapsedMs(start: Date, end: Date): number {
+  const ms = end.getTime() - start.getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+
 function separateTaskExecutions(
   responses: ParsedMessage[],
   allSubagents: Process[]
@@ -146,18 +154,20 @@ function separateTaskExecutions(
           subagent,
           toolResult: msg,
           resultTimestamp: msg.timestamp,
-          durationMs: msg.timestamp.getTime() - callInfo.timestamp.getTime(),
+          durationMs: elapsedMs(callInfo.timestamp, msg.timestamp),
         });
       } else {
-        // Regular tool execution
-        const result = msg.toolResults[0];
+        // Regular tool execution — pick the result whose id matches, since a
+        // message can carry several tool_results.
+        const result =
+          msg.toolResults.find((r) => r.toolUseId === msg.sourceToolUseID) ?? msg.toolResults[0];
         if (result) {
           regularToolExecutions.push({
             toolCall: callInfo.call,
             result,
             startTime: callInfo.timestamp,
             endTime: msg.timestamp,
-            durationMs: msg.timestamp.getTime() - callInfo.timestamp.getTime(),
+            durationMs: elapsedMs(callInfo.timestamp, msg.timestamp),
           });
         }
       }

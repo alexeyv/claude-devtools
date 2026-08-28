@@ -5,7 +5,7 @@
  */
 
 import { parseAllTeammateMessages } from '@shared/utils/teammateMessageParser';
-import { isSpawnToolName } from '@shared/utils/toolNames';
+import { isSpawnToolName } from '@shared/utils/toolIdentity';
 
 import { estimateTokens, formatToolInput, formatToolResult, toDate } from './aiGroupHelpers';
 import { extractSlashes, type PrecedingSlashInfo } from './slashCommandExtractor';
@@ -426,8 +426,7 @@ export function buildDisplayItemsFromMessages(
       }
       // Only treat as subagent input if there are NO tool_result blocks in this message
       const hasToolResults =
-        Array.isArray(msg.content) &&
-        msg.content.some((b) => b.type === 'tool_result');
+        Array.isArray(msg.content) && msg.content.some((b) => b.type === 'tool_result');
       if (rawText.trim() && !hasToolResults) {
         displayItems.push({
           type: 'subagent_input',

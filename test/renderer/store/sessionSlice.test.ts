@@ -50,6 +50,46 @@ describe('sessionSlice', () => {
       expect(store.getState().sessionsLoading).toBe(false);
     });
 
+    it('caches under the requested project and ignores a superseded fetch', async () => {
+      const resolvers = new Map<string, (value: unknown) => void>();
+      mockAPI.getSessionsPaginated.mockImplementation(
+        (projectId: string) =>
+          new Promise((resolve) => {
+            resolvers.set(projectId, resolve);
+          })
+      );
+
+      store.setState({ selectedProjectId: 'project-a' });
+      const fetchA = store.getState().fetchSessionsInitial('project-a');
+      store.setState({ selectedProjectId: 'project-b' });
+      const fetchB = store.getState().fetchSessionsInitial('project-b');
+
+      // B resolves first, then the stale A response lands.
+      resolvers.get('project-b')?.({
+        sessions: [{ id: 'b-1' }],
+        nextCursor: null,
+        hasMore: false,
+        totalCount: 1,
+      });
+      await fetchB;
+      resolvers.get('project-a')?.({
+        sessions: [{ id: 'a-1' }],
+        nextCursor: null,
+        hasMore: false,
+        totalCount: 1,
+      });
+      await fetchA;
+
+      expect(store.getState().sessions.map((s) => s.id)).toEqual(['b-1']);
+      expect(store.getState().sessionsLoading).toBe(false);
+      expect(store.getState()._sessionCache.get('project-a')?.sessions.map((s) => s.id)).toEqual([
+        'a-1',
+      ]);
+      expect(store.getState()._sessionCache.get('project-b')?.sessions.map((s) => s.id)).toEqual([
+        'b-1',
+      ]);
+    });
+
     it('should set loading state during fetch', async () => {
       mockAPI.getSessionsPaginated.mockImplementation(
         () =>

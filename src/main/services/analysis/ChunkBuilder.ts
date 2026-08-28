@@ -345,7 +345,8 @@ export class ChunkBuilder {
 
     return {
       durationMs,
-      totalTokens: inputTokens + outputTokens,
+      // Same definition as calculateMetrics: every token billed into the context.
+      totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
       inputTokens,
       outputTokens,
       cacheReadTokens,

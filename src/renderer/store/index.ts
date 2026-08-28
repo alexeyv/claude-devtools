@@ -413,22 +413,28 @@ export function initializeNotificationListeners(): () => void {
 
   // Open the session requested on the command line (`--session <id>`), both at
   // launch and when a second launch is routed into this window.
-  const openLaunchTarget = (target: SessionLaunchTarget | null): void => {
+  const openLaunchTarget = async (target: SessionLaunchTarget | null): Promise<void> => {
     if (!target?.projectId || !target.sessionId) return;
+    const state = useStore.getState();
+    if (target.contextId && target.contextId !== state.activeContextId) {
+      await state.switchContext(target.contextId);
+    }
     useStore.getState().navigateToSession(target.projectId, target.sessionId);
   };
 
   if (api.session?.getLaunchTarget) {
     void api.session
       .getLaunchTarget()
-      .then(openLaunchTarget)
+      .then((target) => openLaunchTarget(target))
       .catch((error: unknown) => {
         console.error('[store] Failed to read CLI launch target:', error);
       });
   }
 
   if (api.session?.onOpenRequest) {
-    const cleanup = api.session.onOpenRequest(openLaunchTarget);
+    const cleanup = api.session.onOpenRequest((target) => {
+      void openLaunchTarget(target);
+    });
     if (typeof cleanup === 'function') {
       cleanupFns.push(cleanup);
     }

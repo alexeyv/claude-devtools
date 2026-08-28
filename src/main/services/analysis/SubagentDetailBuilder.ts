@@ -93,10 +93,25 @@ export async function buildSubagentDetail(
     }
 
     // Calculate timing
-    const times = parsedSession.messages.map((m) => m.timestamp.getTime());
-    const startTime = new Date(Math.min(...times));
-    const endTime = new Date(Math.max(...times));
-    const duration = endTime.getTime() - startTime.getTime();
+    // Loop instead of Math.min/max spread to avoid stack overflow on large sessions
+    let minTime = Number.POSITIVE_INFINITY;
+    let maxTime = Number.NEGATIVE_INFINITY;
+    for (const m of parsedSession.messages) {
+      const t = m.timestamp.getTime();
+      if (isNaN(t)) continue;
+      if (t < minTime) minTime = t;
+      if (t > maxTime) maxTime = t;
+    }
+    if (minTime === Number.POSITIVE_INFINITY) {
+      // No message carries a timestamp: fall back to the file's own times
+      // rather than the wall clock, so the result is stable across parses.
+      const stat = await fsProvider.stat(subagentPath);
+      minTime = stat.birthtimeMs || stat.mtimeMs;
+      maxTime = stat.mtimeMs || minTime;
+    }
+    const startTime = new Date(minTime);
+    const endTime = new Date(maxTime);
+    const duration = maxTime - minTime;
 
     // Calculate thinking tokens
     let thinkingTokens = 0;

@@ -118,5 +118,3 @@ export class MemoryReader {
     return trimmed;
   }
 }
-
-export const memoryReader = new MemoryReader();

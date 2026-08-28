@@ -1,4 +1,13 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 import { formatDuration } from '@renderer/utils/formatters';
@@ -69,6 +78,12 @@ const PARENT_TYPES = [...EVIDENCE_TYPES, 'unattributed'] as const;
 interface SwimlaneSurfaceProps {
   swimlane: SwimlaneModel;
   onTarget?: (target: SwimlaneNavigationTarget) => void;
+  /**
+   * Stable identity for the surface's local state (zoom, scroll, tooltip).
+   * When provided (e.g. the session id), live refreshes that replace the
+   * model object keep that state; when omitted, a new model object remounts.
+   */
+  resetKey?: string;
 }
 
 interface IntervalDetails {
@@ -2523,11 +2538,15 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): J
 };
 /* eslint-enable jsx-a11y/no-noninteractive-tabindex -- Restore the default accessibility check. */
 
-export const SwimlaneSurface = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
-  const normalizedSwimlane = normalizeSwimlaneModel(swimlane);
+export const SwimlaneSurface = ({
+  swimlane,
+  onTarget,
+  resetKey,
+}: SwimlaneSurfaceProps): JSX.Element => {
+  const normalizedSwimlane = useMemo(() => normalizeSwimlaneModel(swimlane), [swimlane]);
   return (
     <SwimlaneSurfaceContent
-      key={swimlaneModelKey(swimlane)}
+      key={resetKey !== undefined ? `session:${resetKey}` : swimlaneModelKey(swimlane)}
       swimlane={normalizedSwimlane}
       onTarget={onTarget}
     />

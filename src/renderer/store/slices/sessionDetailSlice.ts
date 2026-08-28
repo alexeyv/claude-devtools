@@ -40,7 +40,13 @@ const sessionChunkFingerprint = new Map<string, string>();
  * a renderer-local content fingerprint used as a second-line guard.
  */
 const sessionFileFingerprint = new Map<string, string>();
-let sessionDetailFetchGeneration = 0;
+/**
+ * Latest fetch generation per tab. Keyed per tab so a fetch for one pane
+ * never cancels a concurrent fetch for another pane; only a newer fetch for
+ * the same tab supersedes an older one.
+ */
+const sessionDetailFetchGeneration = new Map<string, number>();
+const GLOBAL_FETCH_KEY = '__global__';
 let agentConfigsCachedForProject = '';
 
 import { getAllTabs } from '../utils/paneHelpers';
@@ -164,7 +170,10 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
 
   // Fetch full session detail with chunks and subagents
   fetchSessionDetail: async (projectId: string, sessionId: string, tabId?: string) => {
-    const requestGeneration = ++sessionDetailFetchGeneration;
+    const fetchKey = tabId ?? GLOBAL_FETCH_KEY;
+    const requestGeneration = (sessionDetailFetchGeneration.get(fetchKey) ?? 0) + 1;
+    sessionDetailFetchGeneration.set(fetchKey, requestGeneration);
+    const isStale = (): boolean => sessionDetailFetchGeneration.get(fetchKey) !== requestGeneration;
     set({
       sessionDetailLoading: true,
       sessionDetailError: null,
@@ -190,7 +199,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       // Initial load — never pass knownFingerprint, so an `unchanged` sentinel
       // cannot be returned at runtime. Narrow defensively for type safety.
       const response = await api.getSessionDetail(projectId, sessionId);
-      if (requestGeneration !== sessionDetailFetchGeneration) {
+      if (isStale()) {
         return;
       }
       const detail = response && !isSessionDetailUnchanged(response) ? response : null;
@@ -246,7 +255,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
 
       // Update tab label if this session is open in a tab
       const currentState = get();
-      if (requestGeneration !== sessionDetailFetchGeneration) {
+      if (isStale()) {
         return;
       }
       const activeTab = currentState.getActiveTab();
@@ -255,13 +264,6 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
         (activeTab?.type === 'session' &&
           activeTab.sessionId === sessionId &&
           activeTab.projectId === projectId);
-      if (!stillViewingSession) {
-        set({
-          sessionDetailLoading: false,
-          conversationLoading: false,
-        });
-        return;
-      }
       const existingTab = findTabBySession(currentState.openTabs, sessionId);
       if (existingTab && detail) {
         const newLabel = detail.session.firstMessage
@@ -270,18 +272,28 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
         currentState.updateTabLabel(existingTab.id, newLabel);
       }
 
-      // Phase 1 set: conversation renders immediately, stats are null (filled in Phase 2)
-      set({
-        sessionDetail: slimDetail,
-        sessionDetailLoading: false,
-        conversation,
-        conversationLoading: false,
-        visibleAIGroupId: firstAIGroupId,
-        selectedAIGroup: firstAIGroup,
-        sessionClaudeMdStats: null,
-        sessionContextStats: null,
-        sessionPhaseInfo: null,
-      });
+      // Phase 1 set: conversation renders immediately, stats are null (filled in Phase 2).
+      // Global (active-tab) state is only written when this session is still the
+      // active one; per-tab data below is always written so a background pane
+      // never stays stuck in its loading state.
+      if (stillViewingSession) {
+        set({
+          sessionDetail: slimDetail,
+          sessionDetailLoading: false,
+          conversation,
+          conversationLoading: false,
+          visibleAIGroupId: firstAIGroupId,
+          selectedAIGroup: firstAIGroup,
+          sessionClaudeMdStats: null,
+          sessionContextStats: null,
+          sessionPhaseInfo: null,
+        });
+      } else {
+        set({
+          sessionDetailLoading: false,
+          conversationLoading: false,
+        });
+      }
 
       // Auto-expand all AI groups if the setting is enabled
       if (tabId && conversation?.items && get().appConfig?.general?.autoExpandAIGroups) {
@@ -326,7 +338,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
             let claudeMdTokenData: Record<string, ClaudeMdFileInfo> = {};
             try {
               claudeMdTokenData = await api.readClaudeMdFiles(projectRoot);
-              if (requestGeneration !== sessionDetailFetchGeneration) return;
+              if (isStale()) return;
             } catch (err) {
               logger.error('Failed to read CLAUDE.md files:', err);
             }
@@ -368,7 +380,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
                   },
                   5
                 );
-                if (requestGeneration !== sessionDetailFetchGeneration) return;
+                if (isStale()) return;
 
                 for (const { fullPath, fileInfo, error } of directoryResults) {
                   if (error || !fileInfo) {
@@ -460,7 +472,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
               },
               5
             );
-            if (requestGeneration !== sessionDetailFetchGeneration) return;
+            if (isStale()) return;
 
             for (const { filePath, fileInfo } of mentionedFileResults) {
               if (fileInfo) {
@@ -478,12 +490,14 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
             );
 
             // Phase 2 set: update only the context stats
-            if (requestGeneration !== sessionDetailFetchGeneration) return;
-            set({
-              sessionClaudeMdStats: claudeMdStats,
-              sessionContextStats: phaseResult.statsMap,
-              sessionPhaseInfo: phaseResult.phaseInfo,
-            });
+            if (isStale()) return;
+            if (stillViewingSession) {
+              set({
+                sessionClaudeMdStats: claudeMdStats,
+                sessionContextStats: phaseResult.statsMap,
+                sessionPhaseInfo: phaseResult.phaseInfo,
+              });
+            }
 
             // Update per-tab stats
             if (tabId) {
@@ -510,7 +524,7 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       }
     } catch (error) {
       logger.error('fetchSessionDetail error:', error);
-      if (requestGeneration !== sessionDetailFetchGeneration) {
+      if (isStale()) {
         return;
       }
       const errorMsg = error instanceof Error ? error.message : 'Failed to fetch session detail';
@@ -623,7 +637,17 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
 
       // Use incremental update when a previous conversation exists —
       // reuses unchanged ChatItem objects, only re-transforms the tail.
-      const prevConversation = get().conversation;
+      // Seed from a tab that is showing this session, not from the global
+      // (active-tab) conversation, which may belong to a different session.
+      const seedState = get();
+      const seedTab = tabsViewingSession.find(
+        (tab) => seedState.tabSessionData[tab.id]?.conversation
+      );
+      const prevConversation = seedTab
+        ? seedState.tabSessionData[seedTab.id].conversation
+        : seedState.selectedSessionId === sessionId
+          ? seedState.conversation
+          : null;
       const newConversation =
         prevConversation && prevConversation.items.length > 0
           ? incrementalUpdateConversation(prevConversation, enhancedChunks, [], isOngoing)
@@ -668,25 +692,35 @@ export const createSessionDetailSlice: StateCreator<AppState, [], [], SessionDet
       // Snapshot existing AI group IDs before overwriting state, so the
       // auto-expand diff below can correctly identify which groups are new.
       const prevGroupIds = new Set(
-        (latestState.conversation?.items ?? [])
+        (prevConversation?.items ?? [])
           .filter((item) => item.type === 'ai')
           .map((item) => (item as { type: 'ai'; group: { id: string } }).group.id)
       );
 
-      // Update only the data, preserve UI states
+      // Update only the data, preserve UI states. The global (active-tab)
+      // conversation is only replaced when the active view is this session;
+      // a refresh for a background pane must not leak into the active one.
+      const activeTab = latestState.getActiveTab();
+      const isGlobalView =
+        latestState.selectedSessionId === sessionId ||
+        (activeTab?.type === 'session' && activeTab.sessionId === sessionId);
       set((state) => ({
-        sessionDetail: slimDetail,
-        conversation: newConversation,
+        ...(isGlobalView
+          ? {
+              sessionDetail: slimDetail,
+              conversation: newConversation,
+              // Preserve visible group if it still exists, otherwise keep current
+              ...(visibleGroupStillExists
+                ? {
+                    selectedAIGroup: updatedSelectedGroup,
+                  }
+                : {}),
+            }
+          : {}),
         // Update on latest sessions state to avoid restoring stale sidebar snapshots.
         sessions: state.sessions.map((s) =>
           s.id === sessionId ? { ...s, isOngoing: slimDetail.session?.isOngoing ?? false } : s
         ),
-        // Preserve visible group if it still exists, otherwise keep current
-        ...(visibleGroupStillExists
-          ? {
-              selectedAIGroup: updatedSelectedGroup,
-            }
-          : {}),
         // Note: aiGroupExpansionLevels and expandedStepIds are NOT touched
         // so expansion states are preserved
       }));

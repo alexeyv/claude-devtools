@@ -135,6 +135,16 @@ describe('MessageClassifier', () => {
       const [result] = classifyMessages([message]);
       expect(result.category).toBe('system');
     });
+
+    it('should classify array content with only stderr as system', () => {
+      const message = createMessage({
+        type: 'user',
+        content: [{ type: 'text', text: '<local-command-stderr>boom</local-command-stderr>' }],
+        isMeta: false,
+      });
+      const [result] = classifyMessages([message]);
+      expect(result.category).toBe('system');
+    });
   });
 
   describe('compact category', () => {

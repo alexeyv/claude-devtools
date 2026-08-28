@@ -158,6 +158,8 @@ export interface WslClaudeRootCandidate {
 export interface SessionLaunchTarget {
   projectId: string;
   sessionId: string;
+  /** Context that owns the target (used for direct local file paths). */
+  contextId?: string;
 }
 
 /**

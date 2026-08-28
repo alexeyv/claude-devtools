@@ -9,6 +9,7 @@ import { estimateTokens, formatToolInput, formatToolResult, toDate } from './aiG
 
 import type { ParsedMessage, SemanticStep } from '../types/data';
 import type { LinkedToolItem } from '../types/groups';
+import type { AgentPlatform } from '@shared/utils/toolIdentity';
 
 /**
  * Link tool calls to their results and build a map of LinkedToolItems.
@@ -45,9 +46,14 @@ export function linkToolCallsToResults(
   // Build a map of skill instructions by source tool use ID
   // Skill tools have follow-up isMeta:true messages with instructions starting with "Base directory for this skill:"
   const skillInstructionsById = new Map<string, string>();
+  // Platform that recorded each tool call, from the parsed message's tool calls.
+  const platformByCallId = new Map<string, AgentPlatform>();
 
   if (responses) {
     for (const msg of responses) {
+      for (const call of msg.toolCalls ?? []) {
+        if (call.platform) platformByCallId.set(call.id, call.platform);
+      }
       // Extract skill instructions
       if (msg.type === 'user' && msg.isMeta && msg.sourceToolUseID && Array.isArray(msg.content)) {
         for (const block of msg.content) {
@@ -86,6 +92,7 @@ export function linkToolCallsToResults(
     const linkedItem: LinkedToolItem = {
       id: toolCallId,
       name: toolName,
+      platform: platformByCallId.get(toolCallId) ?? 'claude',
       input: toolInput as Record<string, unknown>,
       callTokens, // Token count for tool call (what Claude generated)
       result: resultStep
@@ -102,7 +109,9 @@ export function linkToolCallsToResults(
         : undefined,
       startTime: callStartTime,
       endTime: resultStartTime,
-      durationMs: resultStartTime ? resultStartTime.getTime() - callStartTime.getTime() : undefined,
+      durationMs: resultStartTime
+        ? Math.max(0, resultStartTime.getTime() - callStartTime.getTime())
+        : undefined,
       isOrphaned: !resultStep,
       skillInstructions,
       skillInstructionsTokenCount: skillInstructions

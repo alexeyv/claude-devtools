@@ -22,6 +22,7 @@ import type { ContextStats } from '@renderer/types/contextInjection';
 import type {
   AIGroup,
   AIGroupDisplayItem,
+  ChatItem,
   EnhancedAIGroup,
   UserGroup,
 } from '@renderer/types/groups';
@@ -55,6 +56,32 @@ function extractPrecedingSlashInfo(
   }
 
   return undefined;
+}
+
+/**
+ * Per-conversation cache of AIGroup id -> preceding slash info, computed in a
+ * single forward pass so each AIChatGroup render is an O(1) lookup instead of
+ * an O(n) scan of the items array.
+ */
+const precedingSlashCache = new WeakMap<ChatItem[], Map<string, PrecedingSlashInfo | undefined>>();
+
+function getPrecedingSlashMap(items: ChatItem[]): Map<string, PrecedingSlashInfo | undefined> {
+  const cached = precedingSlashCache.get(items);
+  if (cached) return cached;
+
+  const map = new Map<string, PrecedingSlashInfo | undefined>();
+  // Nearest UserGroup before each AIGroup; another AIGroup in between resets it.
+  let lastUserGroup: UserGroup | undefined;
+  for (const item of items) {
+    if (item.type === 'user') {
+      lastUserGroup = item.group;
+    } else if (item.type === 'ai') {
+      map.set(item.group.id, extractPrecedingSlashInfo(lastUserGroup));
+      lastUserGroup = undefined;
+    }
+  }
+  precedingSlashCache.set(items, map);
+  return map;
 }
 
 /**
@@ -198,30 +225,10 @@ const AIChatGroupInner = ({
   const phaseNumber = sessionPhaseInfo?.aiGroupPhaseMap.get(aiGroup.id);
   const totalPhases = sessionPhaseInfo?.phases.length ?? 0;
 
-  // Find the preceding UserGroup for this AIGroup to extract slash info
-  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- React Compiler can't preserve this; manual memo needed for O(n) traversal
-  const precedingSlash = useMemo(() => {
-    if (!conversation?.items) return undefined;
-
-    // Find the index of this AIGroup in the conversation
-    const aiGroupIndex = conversation.items.findIndex(
-      (item) => item.type === 'ai' && item.group.id === aiGroup.id
-    );
-
-    if (aiGroupIndex <= 0) return undefined;
-
-    // Look backwards for the nearest UserGroup
-    for (let i = aiGroupIndex - 1; i >= 0; i--) {
-      const item = conversation.items[i];
-      if (item.type === 'user') {
-        return extractPrecedingSlashInfo(item.group);
-      }
-      // Stop if we hit another AI group (shouldn't happen in normal flow)
-      if (item.type === 'ai') break;
-    }
-
-    return undefined;
-  }, [conversation?.items, aiGroup.id]);
+  // Preceding UserGroup slash info for this AIGroup (cached per items array)
+  const precedingSlash = conversation?.items
+    ? getPrecedingSlashMap(conversation.items).get(aiGroup.id)
+    : undefined;
 
   // Enhance the AI group to get display-ready data
   const enhanced: EnhancedAIGroup = useMemo(

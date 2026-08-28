@@ -88,6 +88,16 @@ export class SubagentResolver {
    */
   private async parseSubagentFile(filePath: string): Promise<Process | null> {
     try {
+      // Extract agent ID from filename (agent-{id}.jsonl)
+      const filename = path.basename(filePath);
+      const agentId = filename.replace(/^agent-/, '').replace(/\.jsonl$/, '');
+
+      // Filter out compact files (context compaction artifacts, not real subagents)
+      // before paying for a parse.
+      if (agentId.startsWith('acompact')) {
+        return null;
+      }
+
       const messages = await parseJsonlFile(filePath, this.projectScanner.getFileSystemProvider());
 
       if (messages.length === 0) {
@@ -97,15 +107,6 @@ export class SubagentResolver {
       // Filter out warmup subagents - these are pre-warming agents spawned by Claude Code
       // that have "Warmup" as the first user message and should not be displayed
       if (this.isWarmupSubagent(messages)) {
-        return null;
-      }
-
-      // Extract agent ID from filename (agent-{id}.jsonl)
-      const filename = path.basename(filePath);
-      const agentId = filename.replace(/^agent-/, '').replace(/\.jsonl$/, '');
-
-      // Filter out compact files (context compaction artifacts, not real subagents)
-      if (agentId.startsWith('acompact')) {
         return null;
       }
 
@@ -181,8 +182,13 @@ export class SubagentResolver {
       return { startTime: now, endTime: now, durationMs: 0 };
     }
 
-    const minTime = Math.min(...timestamps);
-    const maxTime = Math.max(...timestamps);
+    // Loop instead of Math.min/max spread to avoid stack overflow on large sessions
+    let minTime = timestamps[0];
+    let maxTime = timestamps[0];
+    for (let i = 1; i < timestamps.length; i++) {
+      if (timestamps[i] < minTime) minTime = timestamps[i];
+      if (timestamps[i] > maxTime) maxTime = timestamps[i];
+    }
 
     return {
       startTime: new Date(minTime),
@@ -539,7 +545,8 @@ export class SubagentResolver {
 
     return {
       durationMs: totalDuration,
-      totalTokens: inputTokens + outputTokens,
+      // Same definition as calculateMetrics: every token billed into the context.
+      totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
       inputTokens,
       outputTokens,
       cacheReadTokens,
