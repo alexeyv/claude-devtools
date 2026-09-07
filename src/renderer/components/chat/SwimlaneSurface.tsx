@@ -2254,29 +2254,34 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         >
           {zoomPercent}%
         </output>
-        <button
-          type="button"
-          aria-label="Show context heat strips"
-          aria-pressed={contextStripsVisible}
-          className={zoomButtonClassName}
-          data-testid="swimlane-context-toggle"
-          onClick={() => setContextStripsVisible((visible) => !visible)}
+        <label
+          data-testid="swimlane-context-control"
+          title="Context heat strips"
+          style={{
+            alignItems: 'center',
+            color: 'var(--color-text-muted)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            flex: '0 0 auto',
+            gap: '6px',
+            opacity: contextStripsVisible ? 1 : 0.55,
+            transition: 'opacity 120ms',
+            whiteSpace: 'nowrap',
+          }}
         >
-          Context heat
-        </button>
-        {contextStripsVisible && (
+          <input
+            type="checkbox"
+            aria-label="Show context heat strips"
+            checked={contextStripsVisible}
+            className="size-3.5 shrink-0 cursor-pointer accent-blue-500"
+            data-testid="swimlane-context-toggle"
+            onChange={(event) => setContextStripsVisible(event.target.checked)}
+          />
           <span
             role="img"
             aria-label="Context heat scale, 20,000 or fewer to 300,000 or more tokens"
             data-testid="swimlane-context-legend"
-            style={{
-              alignItems: 'center',
-              color: 'var(--color-text-muted)',
-              display: 'inline-flex',
-              flex: '0 0 auto',
-              gap: '4px',
-              whiteSpace: 'nowrap',
-            }}
+            style={{ alignItems: 'center', display: 'inline-flex', gap: '4px' }}
           >
             <span>20k</span>
             <span
@@ -2291,7 +2296,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
             />
             <span>300k+</span>
           </span>
-        )}
+        </label>
       </div>
       <span className="sr-only" id={rulerDescriptionId}>
         Use the keyboard or native scrollbars to navigate the timeline. Drag the elapsed-time ruler

@@ -2756,16 +2756,16 @@ describe('SwimlaneSurface', () => {
     const stripNodes = (): number =>
       host.querySelectorAll('[data-testid^="swimlane-context-strip-"]').length;
 
-    const toggle = element(host, 'swimlane-context-toggle') as HTMLButtonElement;
+    const toggle = element(host, 'swimlane-context-toggle') as HTMLInputElement;
+    expect(toggle.type).toBe('checkbox');
+    expect(toggle.textContent).toBe('');
     expect(element(host, 'swimlane-zoom-controls').contains(toggle)).toBe(true);
-    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.checked).toBe(true);
     expect(strips()).toBe(3);
 
     await click(toggle);
 
-    expect(
-      (element(host, 'swimlane-context-toggle') as HTMLButtonElement).getAttribute('aria-pressed')
-    ).toBe('false');
+    expect((element(host, 'swimlane-context-toggle') as HTMLInputElement).checked).toBe(false);
     expect(stripNodes()).toBe(0);
     // The model still carries every lane's track; only the strips are hidden.
     expect(element(host, 'swimlane-parent-clock')).toBeTruthy();
@@ -2773,13 +2773,37 @@ describe('SwimlaneSurface', () => {
 
     await click(element(host, 'swimlane-context-toggle'));
 
-    expect(
-      (element(host, 'swimlane-context-toggle') as HTMLButtonElement).getAttribute('aria-pressed')
-    ).toBe('true');
+    expect((element(host, 'swimlane-context-toggle') as HTMLInputElement).checked).toBe(true);
     expect(strips()).toBe(3);
   });
 
-  it('shows the ramp legend beside the toggle while the strips are on', async () => {
+  it('toggles the strips from the legend too, without moving the controls', async () => {
+    const host = await render(mixedModel());
+    const control = element(host, 'swimlane-context-control');
+    const layout = (): string[] =>
+      Array.from(element(host, 'swimlane-zoom-controls').children).map(
+        (child) => (child as HTMLElement).dataset.testid ?? child.tagName
+      );
+    const before = layout();
+    expect(control.tagName).toBe('LABEL');
+    expect(control.contains(element(host, 'swimlane-context-legend'))).toBe(true);
+    expect(control.contains(element(host, 'swimlane-context-toggle'))).toBe(true);
+
+    await click(element(host, 'swimlane-context-legend'));
+
+    expect((element(host, 'swimlane-context-toggle') as HTMLInputElement).checked).toBe(false);
+    expect(host.querySelectorAll('[data-testid^="swimlane-context-strip-"]').length).toBe(0);
+    expect(element(host, 'swimlane-context-legend').textContent).toBe('20k300k+');
+    expect(layout()).toEqual(before);
+    expect(control.style.opacity).not.toBe('1');
+
+    await click(element(host, 'swimlane-context-legend'));
+
+    expect((element(host, 'swimlane-context-toggle') as HTMLInputElement).checked).toBe(true);
+    expect(control.style.opacity).toBe('1');
+  });
+
+  it('shows the ramp legend beside the toggle whether the strips are on or off', async () => {
     const host = await render(mixedModel());
 
     const controls = element(host, 'swimlane-zoom-controls');
@@ -2799,7 +2823,7 @@ describe('SwimlaneSurface', () => {
 
     await click(element(host, 'swimlane-context-toggle'));
 
-    expect(host.querySelector('[data-testid="swimlane-context-legend"]')).toBeNull();
+    expect(element(host, 'swimlane-context-legend').textContent).toBe('20k300k+');
     expect(element(host, 'swimlane-zoom-fit')).toBeTruthy();
 
     await click(element(host, 'swimlane-context-toggle'));

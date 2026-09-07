@@ -72,19 +72,21 @@ neighbouring intervals whose counts disagree at the shared boundary.
   lane's context size at the pointer's instant to its label (interpolated within a
   generation interval, exact elsewhere; nothing when the instant is outside the
   track).
-- The heat strips are optional: a control in the existing controls row (a button or
-  checkbox, same language as the zoom controls) turns them off and on. On by default;
+- The heat strips are optional: a bare checkbox in the existing controls row, no text,
+  turns them off and on. Its label wraps the legend, so clicking the spectrum toggles
+  too, and nothing in the row moves or disappears either way. On by default;
   component-local like zoom, so reopening the swimlane starts with them on. When off,
   no strip is drawn and the hover label carries no context size; the model is still
   built.
-- A small legend beside that control shows the whole ramp, every stop in place, with
-  its ends labelled (20k and 300k+), shown only
-  while the strips are on.
+- A small legend inside that control shows the whole ramp, every stop in place, with
+  its ends labelled (20k and 300k+), always present and dimmed while the strips are
+  off.
 - Each strip has an accessible name summarising the lane's start, peak, and end
   context sizes.
 - Tests in the existing `SwimlaneSurface` harness: strip present per lane with a
   track, absent without; gradient and step rendering; hover label with and without a
-  track; toggle off removes strips, legend, and hover size, toggle on restores them;
+  track; toggle off removes strips and hover size and dims the legend in place, toggle
+  on restores them;
   legend; geometry unchanged under zoom.
 
 ## Non-goals
