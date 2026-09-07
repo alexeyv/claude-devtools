@@ -2197,63 +2197,71 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
           width: '100%',
         }}
       >
-        <button
-          type="button"
-          aria-label="Fit swimlane to width"
-          className={zoomButtonClassName}
-          data-testid="swimlane-zoom-fit"
-          disabled={boundedZoomLevel === MIN_ZOOM_LEVEL}
-          onClick={() => setZoom(MIN_ZOOM_LEVEL)}
-          style={{ minWidth: '44px' }}
+        <div
+          data-testid="swimlane-zoom-scale"
+          style={{
+            alignItems: 'center',
+            display: 'flex',
+            flex: '1 1 140px',
+            flexDirection: 'column',
+            gap: '2px',
+            minWidth: '96px',
+          }}
         >
-          Fit
-        </button>
-        <button
-          type="button"
-          aria-label="Zoom out swimlane"
-          className={zoomButtonClassName}
-          data-testid="swimlane-zoom-out"
-          disabled={boundedZoomLevel === MIN_ZOOM_LEVEL}
-          onClick={() => setZoom(boundedZoomLevel - 1)}
-          style={{ minWidth: '32px' }}
+          <output
+            aria-atomic="true"
+            aria-live="polite"
+            data-testid="swimlane-zoom-output"
+            id={scaleOutputId}
+            style={{ lineHeight: 1, whiteSpace: 'nowrap' }}
+          >
+            {zoomPercent}%
+          </output>
+          <input
+            aria-describedby={scaleOutputId}
+            aria-label="Swimlane zoom percentage"
+            className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-emphasis"
+            data-testid="swimlane-zoom-range"
+            aria-valuetext={`${zoomPercent}%`}
+            disabled={maxZoomLevel === MIN_ZOOM_LEVEL}
+            max={maxZoomLevel}
+            min={MIN_ZOOM_LEVEL}
+            onChange={(event) => setZoom(Number(event.currentTarget.value))}
+            step={1}
+            style={{ margin: 0, width: '100%' }}
+            type="range"
+            value={boundedZoomLevel}
+          />
+        </div>
+        <div
+          data-testid="swimlane-zoom-steps"
+          role="group"
+          aria-label="Zoom steps"
+          style={{ display: 'inline-flex', flex: '0 0 auto', gap: '4px' }}
         >
-          −
-        </button>
-        <input
-          aria-describedby={scaleOutputId}
-          aria-label="Swimlane zoom percentage"
-          className="min-w-24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-emphasis"
-          data-testid="swimlane-zoom-range"
-          aria-valuetext={`${zoomPercent}%`}
-          disabled={maxZoomLevel === MIN_ZOOM_LEVEL}
-          max={maxZoomLevel}
-          min={MIN_ZOOM_LEVEL}
-          onChange={(event) => setZoom(Number(event.currentTarget.value))}
-          step={1}
-          style={{ flex: '1 1 140px' }}
-          type="range"
-          value={boundedZoomLevel}
-        />
-        <button
-          type="button"
-          aria-label="Zoom in swimlane"
-          className={zoomButtonClassName}
-          data-testid="swimlane-zoom-in"
-          disabled={boundedZoomLevel === maxZoomLevel}
-          onClick={() => setZoom(boundedZoomLevel + 1)}
-          style={{ minWidth: '32px' }}
-        >
-          +
-        </button>
-        <output
-          aria-atomic="true"
-          aria-live="polite"
-          data-testid="swimlane-zoom-output"
-          id={scaleOutputId}
-          style={{ flex: '0 1 auto', minWidth: 0, whiteSpace: 'nowrap' }}
-        >
-          {zoomPercent}%
-        </output>
+          <button
+            type="button"
+            aria-label="Zoom out swimlane"
+            className={zoomButtonClassName}
+            data-testid="swimlane-zoom-out"
+            disabled={boundedZoomLevel === MIN_ZOOM_LEVEL}
+            onClick={() => setZoom(boundedZoomLevel - 1)}
+            style={{ minWidth: '32px' }}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            aria-label="Zoom in swimlane"
+            className={zoomButtonClassName}
+            data-testid="swimlane-zoom-in"
+            disabled={boundedZoomLevel === maxZoomLevel}
+            onClick={() => setZoom(boundedZoomLevel + 1)}
+            style={{ minWidth: '32px' }}
+          >
+            +
+          </button>
+        </div>
         <label
           data-testid="swimlane-context-control"
           title="Context heat strips"

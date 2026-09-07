@@ -676,7 +676,7 @@ describe('SwimlaneSurface', () => {
     );
     expect(element(host, 'swimlane-hover-label').textContent).toBe('4.194s');
 
-    await click(element(host, 'swimlane-zoom-fit'));
+    await setRangeValue(range, 0);
     expect(range.value).toBe('0');
     expect(element(host, 'swimlane-hover-guide').style.left).toBe('150px');
     expect(element(host, 'swimlane-hover-label').textContent).toBe('1.50s');
@@ -876,17 +876,23 @@ describe('SwimlaneSurface', () => {
     expect(parentLabel.style.width).toBe('');
     expect(parentLabel.style.fontSize).toBe('12px');
     const controls = element(host, 'swimlane-zoom-controls');
-    const fit = element(host, 'swimlane-zoom-fit') as HTMLButtonElement;
+    const scale = element(host, 'swimlane-zoom-scale');
+    const steps = element(host, 'swimlane-zoom-steps');
     const zoomOut = element(host, 'swimlane-zoom-out') as HTMLButtonElement;
     expect(controls.style.boxSizing).toBe('border-box');
     expect(controls.style.flexWrap).toBe('wrap');
     expect(controls.style.minWidth).toBe('0');
-    expect(range.style.flex).toBe('1 1 140px');
-    expect(fit.style.minWidth).toBe('44px');
+    expect(host.querySelector('[data-testid="swimlane-zoom-fit"]')).toBeNull();
+    expect(scale.style.flex).toBe('1 1 140px');
+    expect(scale.style.flexDirection).toBe('column');
+    expect(scale.firstElementChild).toBe(element(host, 'swimlane-zoom-output'));
+    expect(scale.lastElementChild).toBe(range);
+    expect(range.style.width).toBe('100%');
+    expect(Array.from(steps.children)).toEqual([zoomOut, element(host, 'swimlane-zoom-in')]);
+    expect(scale.nextElementSibling).toBe(steps);
     expect(zoomOut.style.minWidth).toBe('32px');
-    expect(fit.className).toContain('bg-surface-raised');
-    expect(fit.className).toContain('focus-visible:ring-2');
-    expect(fit.disabled).toBe(true);
+    expect(zoomOut.className).toContain('bg-surface-raised');
+    expect(zoomOut.className).toContain('focus-visible:ring-2');
     expect(zoomOut.disabled).toBe(true);
   });
 
@@ -953,7 +959,7 @@ describe('SwimlaneSurface', () => {
     expect(range.getAttribute('aria-valuetext')).toBe('6400%');
     expect(canvas.style.width).toBe('46296px');
     expect(zoomIn.disabled).toBe(true);
-    expect((element(host, 'swimlane-zoom-fit') as HTMLButtonElement).disabled).toBe(false);
+    expect(zoomOut.disabled).toBe(false);
   });
 
   it('derives the final zoom level from duration without crossing the 100ms bound', async () => {
@@ -1165,7 +1171,7 @@ describe('SwimlaneSurface', () => {
     expect(rulerTicks(host).length).toBeLessThanOrEqual(20);
   });
 
-  it('returns to Fit after panning, removes stale scroll, and dismisses active details', async () => {
+  it('returns to 100% after panning, removes stale scroll, and dismisses active details', async () => {
     const host = await render(mixedModel());
     const viewport = element(host, 'swimlane-horizontal-scroll');
     const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
@@ -1175,7 +1181,7 @@ describe('SwimlaneSurface', () => {
     viewport.scrollLeft = 500;
     await mouseOver(work);
     expect(document.querySelector('[role="tooltip"]')).not.toBeNull();
-    await act(async () => element(host, 'swimlane-zoom-fit').click());
+    await setRangeValue(range, 0);
 
     expect(range.value).toBe('0');
     expect(viewport.scrollLeft).toBe(0);
@@ -2824,7 +2830,7 @@ describe('SwimlaneSurface', () => {
     await click(element(host, 'swimlane-context-toggle'));
 
     expect(element(host, 'swimlane-context-legend').textContent).toBe('20k300k+');
-    expect(element(host, 'swimlane-zoom-fit')).toBeTruthy();
+    expect(element(host, 'swimlane-zoom-range')).toBeTruthy();
 
     await click(element(host, 'swimlane-context-toggle'));
 
