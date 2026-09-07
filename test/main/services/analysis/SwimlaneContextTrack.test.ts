@@ -149,18 +149,80 @@ describe('buildContextTrack', () => {
     ]);
   });
 
-  it('orders requests by start and leaves abutting intervals that never run backwards', () => {
+  it('clamps overlapping requests into abutting intervals in start order', () => {
     const track = buildContextTrack([
+      request(0, 10, { inputTokens: 1000, outputTokens: 100 }),
+      request(5, 20, { inputTokens: 1800, outputTokens: 200 }),
+    ]);
+
+    expect(track).toEqual([
+      {
+        startTime: new Date(at(0)),
+        endTime: new Date(at(10)),
+        startTokens: 1000,
+        endTokens: 1100,
+      },
+      {
+        startTime: new Date(at(10)),
+        endTime: new Date(at(20)),
+        startTokens: 1800,
+        endTokens: 2000,
+      },
+    ]);
+  });
+
+  it('draws nothing for a request wholly inside its predecessor but still advances the size', () => {
+    const track = buildContextTrack([
+      request(0, 10, { inputTokens: 1000, outputTokens: 100 }),
+      request(2, 4, { inputTokens: 1800, outputTokens: 200 }),
+      request(15, 16, { inputTokens: 2500, outputTokens: 50 }),
+    ]);
+
+    expect(track).toEqual([
+      {
+        startTime: new Date(at(0)),
+        endTime: new Date(at(10)),
+        startTokens: 1000,
+        endTokens: 1100,
+      },
+      {
+        startTime: new Date(at(10)),
+        endTime: new Date(at(15)),
+        startTokens: 2000,
+        endTokens: 2000,
+      },
+      {
+        startTime: new Date(at(15)),
+        endTime: new Date(at(16)),
+        startTokens: 2500,
+        endTokens: 2550,
+      },
+    ]);
+  });
+
+  it('orders requests by start and leaves abutting intervals that never run backwards', () => {
+    const abutting = (track: ReturnType<typeof buildContextTrack>): void => {
+      for (const interval of track) {
+        expect(interval.endTime.getTime()).toBeGreaterThan(interval.startTime.getTime());
+      }
+      for (let index = 1; index < track.length; index++) {
+        expect(track[index].startTime.getTime()).toBe(track[index - 1].endTime.getTime());
+      }
+    };
+
+    const gapped = buildContextTrack([
       request(5, 6, { inputTokens: 1900, outputTokens: 50 }),
       request(0, 2, { inputTokens: 1200, outputTokens: 100 }),
     ]);
+    expect(gapped.map((interval) => interval.startTime.getTime())).toEqual([at(0), at(2), at(5)]);
+    abutting(gapped);
 
-    expect(track.map((interval) => interval.startTime.getTime())).toEqual([at(0), at(2), at(5)]);
-    for (const interval of track) {
-      expect(interval.endTime.getTime()).toBeGreaterThanOrEqual(interval.startTime.getTime());
-    }
-    for (let index = 1; index < track.length; index++) {
-      expect(track[index].startTime.getTime()).toBe(track[index - 1].endTime.getTime());
-    }
+    const overlapping = buildContextTrack([
+      request(8, 12, { inputTokens: 2000, outputTokens: 40 }),
+      request(0, 10, { inputTokens: 1200, outputTokens: 100 }),
+      request(3, 4, { inputTokens: 1500, outputTokens: 20 }),
+    ]);
+    expect(overlapping.map((interval) => interval.startTime.getTime())).toEqual([at(0), at(10)]);
+    abutting(overlapping);
   });
 });

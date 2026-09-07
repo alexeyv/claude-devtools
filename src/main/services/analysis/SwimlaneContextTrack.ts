@@ -44,7 +44,9 @@ function hasUsage(request: ContextTrackRequest): boolean {
  * across the gap to the next request.
  *
  * A lane whose transcript carries no token accounting has no track at all, and a
- * request without a usable wall-clock range is left out entirely.
+ * request without a usable wall-clock range is left out entirely. Requests that
+ * overlap in wall time are clamped to start where the previous interval ended, so
+ * the series stays abutting and the step lands at that clamped boundary.
  */
 export function buildContextTrack(requests: ContextTrackRequest[]): SwimlaneContextInterval[] {
   const ordered = requests
@@ -52,31 +54,39 @@ export function buildContextTrack(requests: ContextTrackRequest[]): SwimlaneCont
     .sort((left, right) => left.start - right.start || left.end - right.end);
   if (!ordered.some(hasUsage)) return [];
   const intervals: SwimlaneContextInterval[] = [];
+  let cursorTime: number | undefined;
+  let cursorTokens = 0;
 
-  ordered.forEach((request, index) => {
+  for (const request of ordered) {
     const startTokens = promptTokens(request.metrics);
     const endTokens = startTokens + request.metrics.outputTokens;
-    // An instantaneous request draws nothing, but still moves the size the next
-    // flat interval carries.
-    if (request.end > request.start) {
+    const start = cursorTime === undefined ? request.start : Math.max(request.start, cursorTime);
+
+    if (cursorTime !== undefined && start > cursorTime) {
       intervals.push({
-        startTime: new Date(request.start),
+        startTime: new Date(cursorTime),
+        endTime: new Date(start),
+        startTokens: cursorTokens,
+        endTokens: cursorTokens,
+      });
+    }
+
+    // A request left with no room of its own - instantaneous, or wholly inside
+    // its predecessor - draws nothing, but still moves the size the next flat
+    // interval carries.
+    if (request.end > start) {
+      intervals.push({
+        startTime: new Date(start),
         endTime: new Date(request.end),
         startTokens,
         endTokens,
       });
+      cursorTime = request.end;
+    } else {
+      cursorTime = cursorTime === undefined ? request.end : Math.max(cursorTime, request.end);
     }
-
-    const next = ordered[index + 1];
-    if (next && next.start > request.end) {
-      intervals.push({
-        startTime: new Date(request.end),
-        endTime: new Date(next.start),
-        startTokens: endTokens,
-        endTokens,
-      });
-    }
-  });
+    cursorTokens = endTokens;
+  }
 
   return intervals;
 }
