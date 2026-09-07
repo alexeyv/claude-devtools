@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CONTEXT_HEAT_MAX_TOKENS,
+  CONTEXT_HEAT_MIN_TOKENS,
   contextHeatBackground,
   contextHeatColor,
   contextSizeAt,
@@ -55,15 +56,20 @@ function relativeLuminance(color: string): number {
 
 describe('swimlaneContextHeat', () => {
   describe('contextHeatColor', () => {
-    it('anchors the ramp at a cold and a burning end', () => {
+    it('anchors the ramp at a cold floor and a burning ceiling', () => {
+      expect(CONTEXT_HEAT_MIN_TOKENS).toBe(20_000);
       expect(CONTEXT_HEAT_MAX_TOKENS).toBe(200_000);
-      expect(contextHeatColor(0)).toBe('rgb(37, 99, 235)');
+      expect(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS)).toBe('rgb(37, 99, 235)');
       expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS)).toBe('rgb(255, 132, 30)');
     });
 
-    it('clamps below zero and above the maximum', () => {
-      expect(contextHeatColor(-5000)).toBe(contextHeatColor(0));
-      expect(contextHeatColor(Number.NaN)).toBe(contextHeatColor(0));
+    it('clamps at the floor and above the maximum', () => {
+      expect(contextHeatColor(0)).toBe(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS));
+      expect(contextHeatColor(-5000)).toBe(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS));
+      expect(contextHeatColor(Number.NaN)).toBe(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS));
+      expect(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS + 5_000)).not.toBe(
+        contextHeatColor(CONTEXT_HEAT_MIN_TOKENS)
+      );
       expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS + 1)).toBe(
         contextHeatColor(CONTEXT_HEAT_MAX_TOKENS)
       );
@@ -71,13 +77,19 @@ describe('swimlaneContextHeat', () => {
     });
 
     it('interpolates between the stops it passes through', () => {
-      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS / 2)).toBe('rgb(198, 124, 46)');
-      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS / 8)).toBe('rgb(39, 124, 202)');
+      expect(contextHeatColor(50_000)).toBe('rgb(40, 159, 171)');
+      expect(contextHeatColor(110_000)).toBe('rgb(120, 163, 100)');
+    });
+
+    it('keeps the middle of the ramp cool: halfway up is not yet amber', () => {
+      const [red, green] = channels(contextHeatColor(110_000));
+      expect(green).toBeGreaterThan(red);
     });
 
     it('burns brightest at the maximum: no stop outshines the hot end', () => {
-      const stopLuminances = [0, 0.25, 0.5, 0.75, 1].map((position) =>
-        relativeLuminance(contextHeatColor(position * CONTEXT_HEAT_MAX_TOKENS))
+      const span = CONTEXT_HEAT_MAX_TOKENS - CONTEXT_HEAT_MIN_TOKENS;
+      const stopLuminances = [0, 0.17, 0.4, 0.6, 0.8, 1].map((position) =>
+        relativeLuminance(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS + position * span))
       );
       const hottest = stopLuminances[stopLuminances.length - 1];
 

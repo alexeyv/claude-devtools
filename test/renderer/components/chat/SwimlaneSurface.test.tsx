@@ -8,6 +8,7 @@ import {
 } from '../../../../src/renderer/components/chat/SwimlaneSurface';
 import {
   CONTEXT_HEAT_MAX_TOKENS,
+  CONTEXT_HEAT_MIN_TOKENS,
   contextHeatColor,
 } from '../../../../src/renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
@@ -2789,13 +2790,13 @@ describe('SwimlaneSurface', () => {
     expect(legend.getAttribute('aria-hidden')).toBeNull();
     expect(
       host.querySelector(
-        '[role="img"][aria-label="Context heat scale, 0 to 200,000 or more tokens"]'
+        '[role="img"][aria-label="Context heat scale, 20,000 or fewer to 200,000 or more tokens"]'
       )
     ).toBe(legend);
-    expect(legend.textContent).toBe('0200k+');
+    expect(legend.textContent).toBe('20k200k+');
     const ramp = legend.querySelector<HTMLElement>('[aria-hidden="true"]');
     expect(ramp?.style.backgroundImage).toBe(
-      `linear-gradient(90deg, ${contextHeatColor(0)} 0%, ${contextHeatColor(
+      `linear-gradient(90deg, ${contextHeatColor(CONTEXT_HEAT_MIN_TOKENS)} 0%, ${contextHeatColor(
         CONTEXT_HEAT_MAX_TOKENS
       )} 100%)`
     );
@@ -2807,7 +2808,7 @@ describe('SwimlaneSurface', () => {
 
     await click(element(host, 'swimlane-context-toggle'));
 
-    expect(element(host, 'swimlane-context-legend').textContent).toBe('0200k+');
+    expect(element(host, 'swimlane-context-legend').textContent).toBe('20k200k+');
   });
 
   function hoverContextModel(): SwimlaneModel {

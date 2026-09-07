@@ -56,9 +56,12 @@ neighbouring intervals whose counts disagree at the shared boundary.
   thin strip along the bottom of the row's clock area, on the same wall-clock axis as
   the bars, at every zoom and scroll position. Row height, label column, fonts, bar
   geometry, and existing colours are unchanged.
-- Colour encodes tokens on a fixed ramp: 0 is cold, 200,000 and above is the hottest
-  colour. Pick a ramp that reads at a glance from cool to burning; define it once in
-  the component. No new CSS variables or theme work.
+- Colour encodes tokens on a fixed ramp: 20,000 and below is cold, 200,000 and above
+  is the hottest colour. No real request sits under the floor, so the ramp spends no
+  colour there, and the cool half covers the sizes a session lives at most of the
+  time so halfway up reads as warm, not already burning. Pick a ramp that reads at a
+  glance from cool to burning; define it once in the component. No new CSS variables
+  or theme work.
 - A flat interval is one colour; a generation interval is a gradient from its start
   colour to its end colour; a step is a hard edge.
 - The existing hover time cursor, when over a lane row that has a track, adds that
@@ -70,7 +73,7 @@ neighbouring intervals whose counts disagree at the shared boundary.
   component-local like zoom, so reopening the swimlane starts with them on. When off,
   no strip is drawn and the hover label carries no context size; the model is still
   built.
-- A small legend beside that control states the ramp ends (0 and 200k+), shown only
+- A small legend beside that control states the ramp ends (20k and 200k+), shown only
   while the strips are on.
 - Each strip has an accessible name summarising the lane's start, peak, and end
   context sizes.

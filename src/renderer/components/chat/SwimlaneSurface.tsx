@@ -14,6 +14,7 @@ import { createPortal } from 'react-dom';
 import { formatDuration } from '@renderer/utils/formatters';
 import {
   CONTEXT_HEAT_MAX_TOKENS,
+  CONTEXT_HEAT_MIN_TOKENS,
   contextHeatBackground,
   contextHeatColor,
   contextSizeAt,
@@ -2268,7 +2269,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         {contextStripsVisible && (
           <span
             role="img"
-            aria-label="Context heat scale, 0 to 200,000 or more tokens"
+            aria-label="Context heat scale, 20,000 or fewer to 200,000 or more tokens"
             data-testid="swimlane-context-legend"
             style={{
               alignItems: 'center',
@@ -2279,13 +2280,13 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
               whiteSpace: 'nowrap',
             }}
           >
-            <span>0</span>
+            <span>20k</span>
             <span
               aria-hidden="true"
               style={{
-                backgroundImage: `linear-gradient(90deg, ${contextHeatColor(0)} 0%, ${contextHeatColor(
-                  CONTEXT_HEAT_MAX_TOKENS
-                )} 100%)`,
+                backgroundImage: `linear-gradient(90deg, ${contextHeatColor(
+                  CONTEXT_HEAT_MIN_TOKENS
+                )} 0%, ${contextHeatColor(CONTEXT_HEAT_MAX_TOKENS)} 100%)`,
                 borderRadius: '2px',
                 display: 'inline-block',
                 height: `${CONTEXT_STRIP_HEIGHT}px`,
