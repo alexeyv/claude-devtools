@@ -2590,7 +2590,7 @@ describe('SwimlaneSurface', () => {
     ).toBeNull();
   });
 
-  it('drops sub-pixel context intervals until zoom makes them wide enough', async () => {
+  it('paints a lone sub-pixel context interval at one pixel instead of dropping it', async () => {
     const model = mixedModel();
     // 5ms at the fit clock width is well under one pixel; its neighbours are wide.
     model.contextTrack = [
@@ -2603,12 +2603,15 @@ describe('SwimlaneSurface', () => {
     const host = await render(model);
 
     expect(element(host, 'swimlane-context-strip-parent-interval-0').style.width).toBe('20%');
-    expect(
-      host.querySelector('[data-testid="swimlane-context-strip-parent-interval-1"]')
-    ).toBeNull();
-    expect(element(host, 'swimlane-context-strip-parent-interval-2')).toBeTruthy();
-    // The accessible name still summarises the whole track, not the drawn part:
-    // over the drawn intervals alone the peak would read 90.0k.
+    const sliver = element(host, 'swimlane-context-strip-parent-interval-1');
+    expect(sliver.style.minWidth).toBe('1px');
+    expect(sliver.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(44_000)} 0%, ${contextHeatColor(150_000)} 100%)`
+    );
+    // The wide neighbours keep their own colours and axis percentages.
+    expect(element(host, 'swimlane-context-strip-parent-interval-2').style.backgroundColor).toBe(
+      contextHeatColor(90_000)
+    );
     expect(element(host, 'swimlane-context-strip-parent').getAttribute('aria-label')).toBe(
       'Parent context from 40.0k to 90.0k tokens, peak 150.0k'
     );
@@ -2616,14 +2619,57 @@ describe('SwimlaneSurface', () => {
     await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 3);
 
     expect(element(host, 'swimlane-zoom-output').textContent).toBe('800%');
-    const subPixel = element(host, 'swimlane-context-strip-parent-interval-1');
-    expect(subPixel.style.backgroundImage).toBe(
+    // Wide enough at 800% to draw at its own width, so the floor comes off.
+    const zoomed = element(host, 'swimlane-context-strip-parent-interval-1');
+    expect(zoomed.style.minWidth).toBe('');
+    expect(zoomed.style.backgroundImage).toBe(
       `linear-gradient(90deg, ${contextHeatColor(44_000)} 0%, ${contextHeatColor(150_000)} 100%)`
     );
-    // The wide neighbours keep their axis percentages, so nothing shifted.
     expect(element(host, 'swimlane-context-strip-parent-interval-0').style.left).toBe('0%');
     expect(element(host, 'swimlane-context-strip-parent-interval-0').style.width).toBe('20%');
-    expect(element(host, 'swimlane-context-strip-parent-interval-2')).toBeTruthy();
+  });
+
+  it('merges a run of sub-pixel context intervals into one gradient once it spans a pixel', async () => {
+    const model = mixedModel();
+    // A climb from cold to hot inside 20ms of a 10s axis: three intervals of
+    // 4ms, 4ms, and 12ms are each under a pixel at the fit clock width, and
+    // together they are about 1.4px.
+    model.contextTrack = [
+      { startTime: at(0), endTime: at(0.004), startTokens: 20_000, endTokens: 60_000 },
+      { startTime: at(0.004), endTime: at(0.008), startTokens: 60_000, endTokens: 100_000 },
+      { startTime: at(0.008), endTime: at(0.02), startTokens: 100_000, endTokens: 140_000 },
+      { startTime: at(0.02), endTime: at(4), startTokens: 140_000, endTokens: 140_000 },
+    ];
+    const host = await render(model);
+
+    const climb = element(host, 'swimlane-context-strip-parent-interval-0');
+    expect(climb.style.left).toBe('0%');
+    expect(parseFloat(climb.style.width)).toBeCloseTo(0.2, 5);
+    expect(climb.style.minWidth).toBe('');
+    expect(climb.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(20_000)} 0%, ${contextHeatColor(140_000)} 100%)`
+    );
+    expect(
+      host.querySelector('[data-testid="swimlane-context-strip-parent-interval-1"]')
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="swimlane-context-strip-parent-interval-2"]')
+    ).toBeNull();
+    // The wide flat neighbour is not folded into the climb.
+    const flat = element(host, 'swimlane-context-strip-parent-interval-3');
+    expect(flat.style.backgroundColor).toBe(contextHeatColor(140_000));
+    expect(flat.style.backgroundImage).toBe('');
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 1);
+
+    // At 200% the 12ms interval alone is wider than a pixel while the two 4ms
+    // ones are not, so those two still merge and the third draws on its own.
+    expect(element(host, 'swimlane-context-strip-parent-interval-0').style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(20_000)} 0%, ${contextHeatColor(100_000)} 100%)`
+    );
+    expect(element(host, 'swimlane-context-strip-parent-interval-2').style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(100_000)} 0%, ${contextHeatColor(140_000)} 100%)`
+    );
   });
 
   it('draws no parent context strip for a lane without a track', async () => {

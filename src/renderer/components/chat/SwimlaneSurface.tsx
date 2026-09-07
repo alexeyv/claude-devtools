@@ -1248,21 +1248,8 @@ const ContextHeatStrip = memo(function ContextHeatStrip({
         zIndex: 4,
       }}
     >
-      {track.map((interval, index) => {
-        // Sub-pixel intervals are dropped like every other renderer's; absolute
-        // axis percentages place the neighbours, so nothing shifts.
-        if (
-          intervalPixelWidth(
-            interval.startTime,
-            interval.endTime,
-            axisStart,
-            axisDuration,
-            clockWidth
-          ) < MIN_MEANINGFUL_INTERVAL_WIDTH
-        ) {
-          return null;
-        }
-        return (
+      {drawnContextIntervals(track, axisStart, axisDuration, clockWidth).map(
+        ({ interval, index, subPixel }) => (
           <div
             key={`${interval.startTime.getTime()}-${index}`}
             aria-hidden="true"
@@ -1271,15 +1258,76 @@ const ContextHeatStrip = memo(function ContextHeatStrip({
               ...intervalStyle(interval.startTime, interval.endTime, axisStart, axisDuration),
               ...contextHeatBackground(interval),
               bottom: 0,
+              ...(subPixel ? { minWidth: `${MIN_MEANINGFUL_INTERVAL_WIDTH}px` } : {}),
               position: 'absolute',
               top: 0,
             }}
           />
-        );
-      })}
+        )
+      )}
     </div>
   );
 });
+
+interface DrawnContextInterval {
+  interval: SwimlaneContextInterval;
+  /** Track index of the first interval this one draws; ids stay stable across zoom. */
+  index: number;
+  /** Still narrower than a pixel after merging, so it paints at the minimum width. */
+  subPixel: boolean;
+}
+
+/**
+ * The intervals a strip paints at this zoom. Bars drop sub-pixel intervals
+ * because the evidence list still carries them, but the strip has no other
+ * place to show a climb that happens inside a few seconds of a long run: a
+ * session reads its first 100k in two minutes and then lives hot for hours.
+ * So consecutive sub-pixel intervals merge into one run that draws as a
+ * gradient from the first start count to the last end count once it spans a
+ * pixel. A run that never gets that wide before a wide neighbour, or before
+ * the track ends, is painted at one pixel rather than dropped. Wide intervals
+ * are never merged into a run, so a flat stretch keeps its one colour.
+ */
+function drawnContextIntervals(
+  track: readonly SwimlaneContextInterval[],
+  axisStart: number,
+  axisDuration: number,
+  clockWidth: number
+): DrawnContextInterval[] {
+  const width = (interval: SwimlaneContextInterval): number =>
+    intervalPixelWidth(interval.startTime, interval.endTime, axisStart, axisDuration, clockWidth);
+  const drawn: DrawnContextInterval[] = [];
+  let run: DrawnContextInterval | null = null;
+  const flushRun = (): void => {
+    if (run) drawn.push(run);
+    run = null;
+  };
+  track.forEach((interval, index) => {
+    if (width(interval) >= MIN_MEANINGFUL_INTERVAL_WIDTH) {
+      flushRun();
+      drawn.push({ interval, index, subPixel: false });
+      return;
+    }
+    run = run
+      ? {
+          interval: {
+            startTime: run.interval.startTime,
+            endTime: interval.endTime,
+            startTokens: run.interval.startTokens,
+            endTokens: interval.endTokens,
+          },
+          index: run.index,
+          subPixel: true,
+        }
+      : { interval, index, subPixel: true };
+    if (width(run.interval) >= MIN_MEANINGFUL_INTERVAL_WIDTH) {
+      run.subPixel = false;
+      flushRun();
+    }
+  });
+  flushRun();
+  return drawn;
+}
 
 interface HitlLayout {
   labelLevel: number | null;
