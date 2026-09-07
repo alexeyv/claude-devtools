@@ -352,7 +352,7 @@ describe('buildSwimlane', () => {
         parentUuid: 'first-final',
         toolResults: [{ toolUseId: toolCall.id, content: 'done', isError: false }],
       }),
-      message('second-stream', 4, { requestId: 'request-two' }),
+      message('second-stream', 4, { requestId: 'request-two', parentUuid: 'read-result' }),
       message('second-final', 5, {
         requestId: 'request-two',
         usage: {
@@ -368,8 +368,8 @@ describe('buildSwimlane', () => {
 
     expect(model.contextTrack).toEqual([
       { startTime: at(0), endTime: at(2), startTokens: 1300, endTokens: 1450 },
-      { startTime: at(2), endTime: at(4), startTokens: 1450, endTokens: 1450 },
-      { startTime: at(4), endTime: at(5), startTokens: 2000, endTokens: 2050 },
+      { startTime: at(2), endTime: at(3), startTokens: 1450, endTokens: 1450 },
+      { startTime: at(3), endTime: at(5), startTokens: 2000, endTokens: 2050 },
     ]);
     expect(buildSwimlane([], [], [message('no-usage', 0)]).contextTrack).toEqual([]);
 
@@ -390,16 +390,47 @@ describe('buildSwimlane', () => {
       },
       {
         startTime: at(2).toISOString(),
-        endTime: at(4).toISOString(),
+        endTime: at(3).toISOString(),
         startTokens: 1450,
         endTokens: 1450,
       },
       {
-        startTime: at(4).toISOString(),
+        startTime: at(3).toISOString(),
         endTime: at(5).toISOString(),
         startTokens: 2000,
         endTokens: 2050,
       },
+    ]);
+  });
+
+  it('starts generation at the first assistant entry when the submission is unlinked', () => {
+    const messages = [
+      message('first-final', 2, {
+        requestId: 'request-one',
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 150,
+          cache_read_input_tokens: 200,
+          cache_creation_input_tokens: 100,
+        },
+      }),
+      message('orphan-stream', 4, { requestId: 'request-two' }),
+      message('orphan-final', 5, {
+        requestId: 'request-two',
+        usage: {
+          input_tokens: 1500,
+          output_tokens: 50,
+          cache_read_input_tokens: 400,
+          cache_creation_input_tokens: 100,
+        },
+      }),
+    ];
+
+    const model = buildSwimlane([], [], messages);
+
+    expect(model.contextTrack).toEqual([
+      { startTime: at(2), endTime: at(4), startTokens: 1450, endTokens: 1450 },
+      { startTime: at(4), endTime: at(5), startTokens: 2000, endTokens: 2050 },
     ]);
   });
 

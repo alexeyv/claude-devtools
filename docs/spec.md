@@ -21,9 +21,13 @@ messages get added.
 
 Between requests the size does not move: tool execution, waiting on children, and
 human waits are flat. Whatever enters the context between two requests (tool results,
-a user message) shows up as a step at the moment the next request begins. During a
-request's generation (reasoning, text, tool-call arguments, including the contents of
-a Write) the size rises gradually from its start value to its end value. Compaction
+a user message) shows up as a step at the moment the next request is submitted. During
+a request's generation (reasoning, text, tool-call arguments, including the contents of
+a Write) the size rises gradually from its start value to its end value. Generation
+runs from the submission the request answers to its last assistant entry: the
+transcript writes an assistant entry only when a content block finishes streaming, so
+the first entry lands after the reasoning, not before it. A request whose submission
+cannot be found starts at its first entry instead. Compaction
 (`isCompactSummary`, see `src/main/types/messages.ts`) makes the next request's start
 value smaller; that is a downward step and needs no other marking.
 
@@ -38,7 +42,7 @@ neighbouring intervals whose counts disagree at the shared boundary.
   child activation (`SwimlaneChildActivation`), from that lane's own transcript
   messages and usage. Child tracks come from the child's own assistant messages,
   never from the parent's `mainSessionImpact`.
-- The track covers the lane from its first request start to its last request end.
+- The track covers the lane from its first request submission to its last request end.
   Continuation gaps between activations of the same child carry no track.
 - A lane whose transcript has no usage records (a Codex rollout without token
   accounting, for example) has an empty track and draws nothing.

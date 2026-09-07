@@ -20,6 +20,8 @@ import { calculateMetrics, getTaskCalls } from '@main/utils/jsonl';
 
 import { buildContextTrack } from './SwimlaneContextTrack';
 
+import type { ContextTrackRequest } from './SwimlaneContextTrack';
+
 interface TimedRange {
   start: number;
   end: number;
@@ -251,6 +253,27 @@ function buildModelResponseRanges(
     });
   }
   return ranges;
+}
+
+/**
+ * Requests for the context track, each starting where its prompt was submitted
+ * rather than where its first assistant entry was written. The transcript
+ * records an assistant entry when a content block finishes streaming, so a
+ * request's reasoning time precedes its first entry; the model-response range
+ * already recovers that span from the submission the entry answers.
+ */
+function contextTrackRequests(
+  requestRanges: RequestRange[],
+  modelResponseRanges: EvidenceRange[]
+): ContextTrackRequest[] {
+  const submittedAt = new Map(
+    modelResponseRanges.map((response) => [response.requestId, response.start])
+  );
+  return requestRanges.map((request) => ({
+    start: submittedAt.get(request.requestId) ?? request.start,
+    end: request.end,
+    metrics: request.metrics,
+  }));
 }
 
 function buildToolAndHumanRanges(
@@ -618,7 +641,7 @@ function buildChildRows(
           metrics: { ...process.metrics },
           evidence: evidenceRanges.map(serializeEvidence),
           segments: buildSegments(range.start, range.end, evidenceRanges, requestRanges, target),
-          contextTrack: buildContextTrack(requestRanges),
+          contextTrack: buildContextTrack(contextTrackRequests(requestRanges, modelResponseRanges)),
           target,
         };
       }),
@@ -1062,6 +1085,6 @@ export function buildSwimlane(
     parentSegments: buildSegments(axisStart, axisEnd, evidenceRanges, requestRanges),
     hitlMarks: toolAndHuman.marks,
     childRows,
-    contextTrack: buildContextTrack(requestRanges),
+    contextTrack: buildContextTrack(contextTrackRequests(requestRanges, modelResponseRanges)),
   };
 }

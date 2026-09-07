@@ -1,10 +1,13 @@
 /**
  * Context-window size along one swimlane lane.
  *
- * Every assistant request saw a prompt of a known size, and by the end of its
- * generation the lane's context has grown by the request's output. Between two
- * requests nothing moves: whatever entered the context meanwhile (tool results,
- * a user message, a compaction) shows up as a step at the next request's start.
+ * Every assistant request saw a prompt of a known size from the moment it was
+ * submitted, and by the end of its generation the lane's context has grown by
+ * the request's output. Between two requests nothing moves: whatever entered
+ * the context meanwhile (tool results, a user message, a compaction) shows up
+ * as a step at the next request's submission. Callers pass each request's
+ * submission time as its start, since the transcript writes the first
+ * assistant entry only once its first block has finished streaming.
  * A compaction needs no marking of its own: it simply makes the next request's
  * start size smaller, which is a downward step like any other.
  */
