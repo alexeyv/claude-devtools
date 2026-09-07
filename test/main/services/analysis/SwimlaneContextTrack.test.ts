@@ -91,6 +91,64 @@ describe('buildContextTrack', () => {
     ]);
   });
 
+  it('steps down at the request after a compaction without marking it further', () => {
+    const track = buildContextTrack([
+      request(0, 2, { inputTokens: 90_000, cacheReadTokens: 30_000, outputTokens: 5_000 }),
+      request(5, 6, { inputTokens: 12_000, outputTokens: 400 }),
+    ]);
+
+    expect(track.map((interval) => [interval.startTokens, interval.endTokens])).toEqual([
+      [120_000, 125_000],
+      [125_000, 125_000],
+      [12_000, 12_400],
+    ]);
+    expect(track).toHaveLength(3);
+  });
+
+  it('has no track for a lane whose requests carry no usage at all', () => {
+    expect(buildContextTrack([])).toEqual([]);
+    expect(buildContextTrack([request(0, 2), request(5, 6)])).toEqual([]);
+  });
+
+  it('skips requests with non-finite times', () => {
+    const track = buildContextTrack([
+      { start: Number.NaN, end: at(1), metrics: metrics({ inputTokens: 999 }) },
+      { start: at(0), end: Number.POSITIVE_INFINITY, metrics: metrics({ inputTokens: 999 }) },
+      request(2, 4, { inputTokens: 1000, outputTokens: 100 }),
+    ]);
+
+    expect(track).toEqual([
+      {
+        startTime: new Date(at(2)),
+        endTime: new Date(at(4)),
+        startTokens: 1000,
+        endTokens: 1100,
+      },
+    ]);
+  });
+
+  it('draws no generation interval for a zero-length request but still advances the size', () => {
+    const track = buildContextTrack([
+      request(0, 0, { inputTokens: 1000, outputTokens: 200 }),
+      request(4, 6, { inputTokens: 1500, outputTokens: 50 }),
+    ]);
+
+    expect(track).toEqual([
+      {
+        startTime: new Date(at(0)),
+        endTime: new Date(at(4)),
+        startTokens: 1200,
+        endTokens: 1200,
+      },
+      {
+        startTime: new Date(at(4)),
+        endTime: new Date(at(6)),
+        startTokens: 1500,
+        endTokens: 1550,
+      },
+    ]);
+  });
+
   it('orders requests by start and leaves abutting intervals that never run backwards', () => {
     const track = buildContextTrack([
       request(5, 6, { inputTokens: 1900, outputTokens: 50 }),
