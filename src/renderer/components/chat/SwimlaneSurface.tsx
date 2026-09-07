@@ -2219,6 +2219,8 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         </button>
         {contextStripsVisible && (
           <span
+            role="img"
+            aria-label="Context heat scale, 0 to 200,000 or more tokens"
             data-testid="swimlane-context-legend"
             style={{
               alignItems: 'center',

@@ -2738,6 +2738,11 @@ describe('SwimlaneSurface', () => {
     const legend = element(host, 'swimlane-context-legend');
     expect(controls.contains(legend)).toBe(true);
     expect(legend.getAttribute('aria-hidden')).toBeNull();
+    expect(
+      host.querySelector(
+        '[role="img"][aria-label="Context heat scale, 0 to 200,000 or more tokens"]'
+      )
+    ).toBe(legend);
     expect(legend.textContent).toBe('0200k+');
     const ramp = legend.querySelector<HTMLElement>('[aria-hidden="true"]');
     expect(ramp?.style.backgroundImage).toBe(
