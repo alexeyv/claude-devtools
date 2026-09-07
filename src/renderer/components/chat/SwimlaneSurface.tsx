@@ -2267,7 +2267,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         {contextStripsVisible && (
           <span
             role="img"
-            aria-label="Context heat scale, 20,000 or fewer to 200,000 or more tokens"
+            aria-label="Context heat scale, 20,000 or fewer to 300,000 or more tokens"
             data-testid="swimlane-context-legend"
             style={{
               alignItems: 'center',
@@ -2289,7 +2289,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                 width: '48px',
               }}
             />
-            <span>200k+</span>
+            <span>300k+</span>
           </span>
         )}
       </div>

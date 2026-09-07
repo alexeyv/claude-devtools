@@ -1,13 +1,14 @@
 /**
  * Colour ramp for the swimlane's context-heat strips.
  *
- * A lane's context size is mapped onto one fixed cold-to-burning ramp so that
- * every lane, at every zoom, reads on the same absolute scale:
- * `CONTEXT_HEAT_MIN_TOKENS` and below is the cold end and
- * `CONTEXT_HEAT_MAX_TOKENS` and above the burning end, logarithmic in between
- * so a doubling anywhere reads as the same change. The floor sits where a
- * real session starts, since system prompt and tool schemas alone put every
- * request above it, so the ramp spends no colour on sizes no lane ever has.
+ * A lane's context size is mapped onto one fixed ramp so that every lane, at
+ * every zoom, reads on the same absolute scale: `CONTEXT_HEAT_MIN_TOKENS` and
+ * below is blank white, saturating into blue by 50k and warming through the middle to
+ * red at `CONTEXT_HEAT_RED_TOKENS`, then darkening to black at
+ * `CONTEXT_HEAT_MAX_TOKENS` and above. The scale is logarithmic in tokens, so
+ * a doubling anywhere reads as the same change. The floor sits where a real
+ * session starts, since system prompt and tool schemas alone put every request
+ * above it, so the ramp spends no colour on sizes no lane ever has.
  */
 
 import { formatTokensCompact } from '@shared/utils/tokenFormatting';
@@ -18,39 +19,42 @@ import type { CSSProperties } from 'react';
 /** Token count at and below which the ramp sits at its coldest colour. */
 export const CONTEXT_HEAT_MIN_TOKENS = 20_000;
 
-/** Token count at which the ramp saturates at its hottest colour. */
-export const CONTEXT_HEAT_MAX_TOKENS = 200_000;
+/** Token count at which the ramp reaches pure red, a session filling its window. */
+export const CONTEXT_HEAT_RED_TOKENS = 200_000;
+
+/** Token count at and above which the ramp has burnt out to black. */
+export const CONTEXT_HEAT_MAX_TOKENS = 300_000;
 
 interface RampStop {
-  /** Position on the ramp, 0 at the cold end and 1 at the burning end. */
-  position: number;
+  /** Context size this colour is exact at. */
+  tokens: number;
   rgb: readonly [number, number, number];
 }
 
 /**
- * Cold blue turning teal within the first 30k, green and khaki across the
- * middle, amber late, and a burning incandescent orange only at the top. The
- * cold end changes fastest because that is where sub-agents live and where a
- * climb of 10k should still be visible on a four-pixel strip; the cool half of
- * the ramp covers the sizes a session sits at most of the time, so halfway up
- * reads as warm rather than already burning. Red rises and blue falls across
- * every stop, so hotter is unambiguous even for a colour-blind reader, and
- * relative luminance climbs the whole way, so the burning end is the brightest
- * band on the dark surface and no intermediate stop outshines it.
+ * Blank white saturating into blue across the first 30k, so a sub-agent's
+ * early tens of thousands are visible motion on a four-pixel strip; from blue
+ * at 50k the warm stops sit a quarter of a doubling apart through teal, green,
+ * khaki, amber and orange to red at 200k, where a session is filling its
+ * window; then darker and darker red until 300k is black. Stops sit at token
+ * counts and the ramp interpolates between them on the logarithmic scale.
  */
 const RAMP_STOPS: readonly RampStop[] = [
-  { position: 0, rgb: [37, 99, 235] },
-  { position: 0.17, rgb: [40, 160, 170] },
-  { position: 0.4, rgb: [90, 165, 120] },
-  { position: 0.6, rgb: [150, 160, 80] },
-  { position: 0.8, rgb: [210, 145, 50] },
-  { position: 1, rgb: [255, 132, 30] },
+  { tokens: 20_000, rgb: [250, 250, 252] },
+  { tokens: 30_000, rgb: [160, 195, 245] },
+  { tokens: 50_000, rgb: [37, 99, 235] },
+  { tokens: 63_000, rgb: [40, 160, 170] },
+  { tokens: 79_000, rgb: [90, 165, 120] },
+  { tokens: 100_000, rgb: [150, 160, 80] },
+  { tokens: 126_000, rgb: [210, 145, 50] },
+  { tokens: 159_000, rgb: [255, 132, 30] },
+  { tokens: 200_000, rgb: [255, 45, 25] },
+  { tokens: 300_000, rgb: [0, 0, 0] },
 ];
 
 /**
- * Position on the ramp, logarithmic in tokens: the floor to the ceiling is one
- * decade, so every doubling of context moves the same distance along the ramp
- * and the sizes a session lives at get as much colour as the sizes it ends at.
+ * Position on the ramp, logarithmic in tokens between the floor and the
+ * ceiling, so every doubling of context moves the same distance.
  */
 function clampRampPosition(tokens: number): number {
   if (!Number.isFinite(tokens) || tokens <= CONTEXT_HEAT_MIN_TOKENS) return 0;
@@ -61,11 +65,13 @@ function clampRampPosition(tokens: number): number {
   );
 }
 
+const STOP_POSITIONS = RAMP_STOPS.map((stop) => clampRampPosition(stop.tokens));
+
 /** The whole ramp as a CSS gradient, every stop at its place, for the legend. */
 export function contextHeatLegendGradient(): string {
   const stops = RAMP_STOPS.map(
-    ({ position, rgb: [red, green, blue] }) =>
-      `rgb(${red}, ${green}, ${blue}) ${Math.round(position * 100)}%`
+    ({ rgb: [red, green, blue] }, index) =>
+      `rgb(${red}, ${green}, ${blue}) ${(STOP_POSITIONS[index] * 100).toFixed(1)}%`
   );
   return `linear-gradient(90deg, ${stops.join(', ')})`;
 }
@@ -76,11 +82,13 @@ export function contextHeatColor(tokens: number): string {
   // Every position lands on or before the final stop, which sits at 1.
   const upperIndex = Math.max(
     1,
-    RAMP_STOPS.findIndex((stop) => position <= stop.position)
+    STOP_POSITIONS.findIndex((stopPosition) => position <= stopPosition)
   );
   const upper = RAMP_STOPS[upperIndex];
   const lower = RAMP_STOPS[upperIndex - 1];
-  const ratio = (position - lower.position) / (upper.position - lower.position);
+  const ratio =
+    (position - STOP_POSITIONS[upperIndex - 1]) /
+    (STOP_POSITIONS[upperIndex] - STOP_POSITIONS[upperIndex - 1]);
   const [red, green, blue] = lower.rgb.map((channel, index) =>
     Math.round(channel + (upper.rgb[index] - channel) * ratio)
   );

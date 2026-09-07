@@ -2789,10 +2789,10 @@ describe('SwimlaneSurface', () => {
     expect(legend.getAttribute('aria-hidden')).toBeNull();
     expect(
       host.querySelector(
-        '[role="img"][aria-label="Context heat scale, 20,000 or fewer to 200,000 or more tokens"]'
+        '[role="img"][aria-label="Context heat scale, 20,000 or fewer to 300,000 or more tokens"]'
       )
     ).toBe(legend);
-    expect(legend.textContent).toBe('20k200k+');
+    expect(legend.textContent).toBe('20k300k+');
     const ramp = legend.querySelector<HTMLElement>('[aria-hidden="true"]');
     expect(ramp?.style.backgroundImage).toBe(contextHeatLegendGradient());
     expect(contextHeatLegendGradient().split(',').length).toBeGreaterThan(3);
@@ -2804,7 +2804,7 @@ describe('SwimlaneSurface', () => {
 
     await click(element(host, 'swimlane-context-toggle'));
 
-    expect(element(host, 'swimlane-context-legend').textContent).toBe('20k200k+');
+    expect(element(host, 'swimlane-context-legend').textContent).toBe('20k300k+');
   });
 
   function hoverContextModel(): SwimlaneModel {
