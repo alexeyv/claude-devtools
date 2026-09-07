@@ -6,6 +6,7 @@ import {
   SwimlaneSurface,
   normalizeContextTrack,
 } from '../../../../src/renderer/components/chat/SwimlaneSurface';
+import { contextHeatColor } from '../../../../src/renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
 
 import type {
@@ -2539,6 +2540,57 @@ describe('SwimlaneSurface', () => {
 
     expect(element(host, 'swimlane-parent-row')).toBeTruthy();
     expect(element(host, 'swimlane-child-row-child')).toBeTruthy();
+  });
+
+  it('draws the parent context strip as gradients, flats, and hard steps on the clock axis', async () => {
+    const model = mixedModel();
+    // Generation up, a step up into a flat wait, then a second generation.
+    model.contextTrack = [
+      { startTime: at(0), endTime: at(2), startTokens: 40_000, endTokens: 44_000 },
+      { startTime: at(2), endTime: at(4), startTokens: 90_000, endTokens: 90_000 },
+      { startTime: at(4), endTime: at(6), startTokens: 90_000, endTokens: 150_000 },
+    ];
+    const host = await render(model);
+
+    const strip = element(host, 'swimlane-context-strip-parent');
+    expect(strip.getAttribute('role')).toBe('img');
+    expect(strip.getAttribute('aria-label')).toBe(
+      'Parent context from 40.0k to 150.0k tokens, peak 150.0k'
+    );
+    expect(strip.style.pointerEvents).toBe('none');
+    expect(strip.style.height).toBe('4px');
+    expect(strip.style.bottom).toBe('7px');
+    expect(element(host, 'swimlane-parent-clock').contains(strip)).toBe(true);
+
+    const generation = element(host, 'swimlane-context-strip-parent-interval-0');
+    const flat = element(host, 'swimlane-context-strip-parent-interval-1');
+    const second = element(host, 'swimlane-context-strip-parent-interval-2');
+    expect(generation.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(40_000)} 0%, ${contextHeatColor(44_000)} 100%)`
+    );
+    expect(generation.style.backgroundColor).toBe('');
+    expect(flat.style.backgroundColor).toBe(contextHeatColor(90_000));
+    expect(flat.style.backgroundImage).toBe('');
+    expect(second.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(90_000)} 0%, ${contextHeatColor(150_000)} 100%)`
+    );
+
+    // The step at 2s is a hard edge: abutting intervals, different colours.
+    expect(generation.style.left).toBe('0%');
+    expect(generation.style.width).toBe('20%');
+    expect(flat.style.left).toBe('20%');
+    expect(flat.style.width).toBe('20%');
+    expect(second.style.left).toBe('40%');
+    expect(contextHeatColor(44_000)).not.toBe(contextHeatColor(90_000));
+    expect(
+      host.querySelector('[data-testid="swimlane-context-strip-parent-interval-3"]')
+    ).toBeNull();
+  });
+
+  it('draws no parent context strip for a lane without a track', async () => {
+    const host = await render(mixedModel());
+
+    expect(host.querySelector('[data-testid="swimlane-context-strip-parent"]')).toBeNull();
   });
 
   it('renders a useful parent-only clock with boundaries and no empty-state substitution', async () => {

@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { formatDuration } from '@renderer/utils/formatters';
+import { contextHeatBackground, contextTrackSummary } from '@renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '@shared/types';
 
 import type {
@@ -38,6 +39,8 @@ const MIN_MEANINGFUL_INTERVAL_WIDTH = 1;
 const ROW_HEIGHT = 34;
 const RULER_HEIGHT = 28;
 const TRACK_INSET = 6;
+const CONTEXT_STRIP_HEIGHT = 4;
+const CONTEXT_STRIP_BOTTOM = TRACK_INSET + 1;
 const LABEL_HORIZONTAL_PADDING = 8;
 const MAX_VISIBLE_DEPTH = 7;
 const DEPTH_INDENT = 12;
@@ -164,6 +167,14 @@ interface SwimlaneIntervalProps {
   tooltipId: string;
   dataSegmentType?: string;
   inlineLabel?: string;
+}
+
+interface ContextHeatStripProps {
+  track: readonly SwimlaneContextInterval[];
+  axisStart: number;
+  axisDuration: number;
+  ariaLabel: string;
+  testId: string;
 }
 
 type RuntimeRecord = Record<string, unknown>;
@@ -1197,6 +1208,53 @@ const intervalBaseStyle: CSSProperties = {
   top: `${TRACK_INSET}px`,
 };
 
+/**
+ * One lane's context-window size drawn as a thin heat strip along the bottom of
+ * its clock region, on the same wall-clock axis as the bars. Flat intervals are
+ * one colour, generation intervals a gradient, and neighbouring intervals whose
+ * counts disagree meet as a hard edge.
+ */
+const ContextHeatStrip = ({
+  track,
+  axisStart,
+  axisDuration,
+  ariaLabel,
+  testId,
+}: Readonly<ContextHeatStripProps>): JSX.Element | null => {
+  if (track.length === 0) return null;
+  return (
+    <div
+      role="img"
+      aria-label={ariaLabel}
+      data-testid={testId}
+      style={{
+        bottom: `${CONTEXT_STRIP_BOTTOM}px`,
+        height: `${CONTEXT_STRIP_HEIGHT}px`,
+        left: 0,
+        pointerEvents: 'none',
+        position: 'absolute',
+        right: 0,
+        zIndex: 4,
+      }}
+    >
+      {track.map((interval, index) => (
+        <div
+          key={`${interval.startTime.getTime()}-${index}`}
+          aria-hidden="true"
+          data-testid={`${testId}-interval-${index}`}
+          style={{
+            ...intervalStyle(interval.startTime, interval.endTime, axisStart, axisDuration),
+            ...contextHeatBackground(interval),
+            bottom: 0,
+            position: 'absolute',
+            top: 0,
+          }}
+        />
+      ))}
+    </div>
+  );
+};
+
 interface HitlLayout {
   labelLevel: number | null;
   labelSide: 'left' | 'right';
@@ -1857,6 +1915,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
       intervalPixelWidth(segment.startTime, segment.endTime, axisStart, axisDuration, clockWidth) >=
       MIN_MEANINGFUL_INTERVAL_WIDTH
   );
+  const parentContextSummary = contextTrackSummary(swimlane.contextTrack);
   const hitlLayout = layoutHitlMarks(
     swimlane.hitlMarks,
     axisStart,
@@ -2207,6 +2266,15 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
               style={clockStyle}
             >
               <div aria-hidden="true" style={baseTrackStyle} />
+              {parentContextSummary && (
+                <ContextHeatStrip
+                  track={swimlane.contextTrack}
+                  axisStart={axisStart}
+                  axisDuration={axisDuration}
+                  ariaLabel={`Parent ${parentContextSummary}`}
+                  testId="swimlane-context-strip-parent"
+                />
+              )}
               {visibleParentSegments.map((segment) => {
                 const intervalKey = intervalIdentity('parent', segment.id);
                 const metrics =
