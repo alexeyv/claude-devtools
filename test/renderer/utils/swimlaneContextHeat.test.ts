@@ -4,7 +4,39 @@ import {
   CONTEXT_HEAT_MAX_TOKENS,
   contextHeatBackground,
   contextHeatColor,
+  contextSizeAt,
+  contextTrackSummary,
 } from '../../../src/renderer/utils/swimlaneContextHeat';
+
+import type { SwimlaneContextInterval } from '../../../src/shared/types';
+
+const BASE_TIME = Date.UTC(2024, 0, 1);
+
+function at(seconds: number): Date {
+  return new Date(BASE_TIME + seconds * 1000);
+}
+
+function interval(
+  startSeconds: number,
+  endSeconds: number,
+  startTokens: number,
+  endTokens: number
+): SwimlaneContextInterval {
+  return {
+    startTime: at(startSeconds),
+    endTime: at(endSeconds),
+    startTokens,
+    endTokens,
+  };
+}
+
+/** Generation, a step up into a flat wait, generation, then a compaction step down. */
+const track: SwimlaneContextInterval[] = [
+  interval(0, 2, 1000, 1100),
+  interval(2, 4, 1500, 1500),
+  interval(4, 6, 1500, 3500),
+  interval(6, 8, 900, 900),
+];
 
 function channels(color: string): number[] {
   const match = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(color);
@@ -64,6 +96,45 @@ describe('swimlaneContextHeat', () => {
       expect(
         contextHeatBackground({ startTokens: 120_000, endTokens: 60_000 }).backgroundColor
       ).toBeUndefined();
+    });
+  });
+
+  describe('contextSizeAt', () => {
+    it('returns nothing outside the track', () => {
+      expect(contextSizeAt([], BASE_TIME)).toBeUndefined();
+      expect(contextSizeAt(track, at(-0.001).getTime())).toBeUndefined();
+      expect(contextSizeAt(track, at(8.001).getTime())).toBeUndefined();
+    });
+
+    it('interpolates inside a generation interval and is exact at its ends', () => {
+      expect(contextSizeAt(track, at(0).getTime())).toBe(1000);
+      expect(contextSizeAt(track, at(1).getTime())).toBe(1050);
+      expect(contextSizeAt(track, at(5).getTime())).toBe(2500);
+      expect(contextSizeAt(track, at(8).getTime())).toBe(900);
+    });
+
+    it('reads one value across a flat interval and the reached value at a step', () => {
+      expect(contextSizeAt(track, at(2.5).getTime())).toBe(1500);
+      expect(contextSizeAt(track, at(3).getTime())).toBe(1500);
+      expect(contextSizeAt(track, at(2).getTime())).toBe(1100);
+      expect(contextSizeAt(track, at(6).getTime())).toBe(3500);
+    });
+
+    it('answers a zero-length interval with the size it leaves behind', () => {
+      expect(contextSizeAt([interval(3, 3, 500, 700)], at(3).getTime())).toBe(700);
+    });
+  });
+
+  describe('contextTrackSummary', () => {
+    it('states the start, peak, and end sizes', () => {
+      expect(contextTrackSummary(track)).toBe('context from 1.0k to 900 tokens, peak 3.5k');
+      expect(contextTrackSummary([interval(0, 1, 0, 250_000)])).toBe(
+        'context from 0 to 250.0k tokens, peak 250.0k'
+      );
+    });
+
+    it('has nothing to say about an empty track', () => {
+      expect(contextTrackSummary([])).toBeUndefined();
     });
   });
 });

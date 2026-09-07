@@ -6,6 +6,8 @@
  * cold end and `CONTEXT_HEAT_MAX_TOKENS` and above the burning end.
  */
 
+import { formatTokensCompact } from '@shared/utils/tokenFormatting';
+
 import type { SwimlaneContextInterval } from '@shared/types';
 import type { CSSProperties } from 'react';
 
@@ -66,4 +68,44 @@ export function contextHeatBackground(
     return { backgroundColor: startColor };
   }
   return { backgroundImage: `linear-gradient(90deg, ${startColor} 0%, ${endColor} 100%)` };
+}
+
+/**
+ * The context size at one instant, or undefined when the instant falls outside
+ * the track. Interpolated inside a generation interval and exact everywhere
+ * else; at a shared boundary the earlier interval's end value wins, so a step
+ * reads as the size the lane had reached.
+ *
+ * Assumes the sorted, abutting track the renderer's normalizer produces.
+ */
+export function contextSizeAt(
+  track: readonly SwimlaneContextInterval[],
+  instantMs: number
+): number | undefined {
+  for (const interval of track) {
+    const start = interval.startTime.getTime();
+    const end = interval.endTime.getTime();
+    if (instantMs < start || instantMs > end) continue;
+    if (end <= start) return interval.endTokens;
+    const ratio = (instantMs - start) / (end - start);
+    return Math.round(interval.startTokens + (interval.endTokens - interval.startTokens) * ratio);
+  }
+  return undefined;
+}
+
+/**
+ * The body of a strip's accessible name: where the lane's context started,
+ * how high it climbed, and where it ended. Undefined for an empty track.
+ */
+export function contextTrackSummary(track: readonly SwimlaneContextInterval[]): string | undefined {
+  const first = track[0];
+  const last = track[track.length - 1];
+  if (!first || !last) return undefined;
+  const peak = track.reduce(
+    (highest, interval) => Math.max(highest, interval.startTokens, interval.endTokens),
+    Number.NEGATIVE_INFINITY
+  );
+  return `context from ${formatTokensCompact(first.startTokens)} to ${formatTokensCompact(
+    last.endTokens
+  )} tokens, peak ${formatTokensCompact(peak)}`;
 }
