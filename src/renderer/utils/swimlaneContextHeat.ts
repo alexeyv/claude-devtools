@@ -21,15 +21,18 @@ interface RampStop {
 }
 
 /**
- * Cold blue through teal and amber into burning red. Red rises and blue falls
- * across every stop, so hotter is unambiguous even for a colour-blind reader.
+ * Cold blue through teal and amber into a burning incandescent orange. Red
+ * rises and blue falls across every stop, so hotter is unambiguous even for a
+ * colour-blind reader, and relative luminance climbs the whole way, so the
+ * burning end is the brightest, most saturated band on the dark surface and no
+ * intermediate stop outshines it.
  */
 const RAMP_STOPS: readonly RampStop[] = [
   { position: 0, rgb: [37, 99, 235] },
-  { position: 0.25, rgb: [45, 180, 190] },
-  { position: 0.5, rgb: [235, 190, 40] },
-  { position: 0.75, rgb: [243, 120, 28] },
-  { position: 1, rgb: [248, 40, 24] },
+  { position: 0.25, rgb: [40, 148, 168] },
+  { position: 0.5, rgb: [198, 124, 46] },
+  { position: 0.75, rgb: [242, 100, 34] },
+  { position: 1, rgb: [255, 132, 30] },
 ];
 
 function clampRampPosition(tokens: number): number {

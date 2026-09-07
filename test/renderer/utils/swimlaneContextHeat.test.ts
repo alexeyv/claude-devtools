@@ -44,12 +44,21 @@ function channels(color: string): number[] {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+/** WCAG relative luminance, the perceived brightness of a ramp colour. */
+function relativeLuminance(color: string): number {
+  const [red, green, blue] = channels(color).map((channel) => {
+    const scaled = channel / 255;
+    return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
 describe('swimlaneContextHeat', () => {
   describe('contextHeatColor', () => {
     it('anchors the ramp at a cold and a burning end', () => {
       expect(CONTEXT_HEAT_MAX_TOKENS).toBe(200_000);
       expect(contextHeatColor(0)).toBe('rgb(37, 99, 235)');
-      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS)).toBe('rgb(248, 40, 24)');
+      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS)).toBe('rgb(255, 132, 30)');
     });
 
     it('clamps below zero and above the maximum', () => {
@@ -62,8 +71,19 @@ describe('swimlaneContextHeat', () => {
     });
 
     it('interpolates between the stops it passes through', () => {
-      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS / 2)).toBe('rgb(235, 190, 40)');
-      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS / 8)).toBe('rgb(41, 140, 213)');
+      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS / 2)).toBe('rgb(198, 124, 46)');
+      expect(contextHeatColor(CONTEXT_HEAT_MAX_TOKENS / 8)).toBe('rgb(39, 124, 202)');
+    });
+
+    it('burns brightest at the maximum: no stop outshines the hot end', () => {
+      const stopLuminances = [0, 0.25, 0.5, 0.75, 1].map((position) =>
+        relativeLuminance(contextHeatColor(position * CONTEXT_HEAT_MAX_TOKENS))
+      );
+      const hottest = stopLuminances[stopLuminances.length - 1];
+
+      stopLuminances.slice(0, -1).forEach((luminance) => {
+        expect(luminance).toBeLessThan(hottest);
+      });
     });
 
     it('warms monotonically: red never falls and blue never rises', () => {
@@ -90,7 +110,7 @@ describe('swimlaneContextHeat', () => {
     it('paints a generation interval as a left-to-right gradient', () => {
       expect(contextHeatBackground({ startTokens: 0, endTokens: CONTEXT_HEAT_MAX_TOKENS })).toEqual(
         {
-          backgroundImage: 'linear-gradient(90deg, rgb(37, 99, 235) 0%, rgb(248, 40, 24) 100%)',
+          backgroundImage: 'linear-gradient(90deg, rgb(37, 99, 235) 0%, rgb(255, 132, 30) 100%)',
         }
       );
       expect(
