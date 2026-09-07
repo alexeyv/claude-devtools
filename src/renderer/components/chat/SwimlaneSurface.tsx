@@ -151,6 +151,19 @@ interface PointerPosition {
   clientY: number;
 }
 
+interface RangeSelection {
+  model: NormalizedSwimlaneModel;
+  pointerId: number;
+  originX: number;
+  clockLeft: number;
+  clockWidth: number;
+  visibleLeft: number;
+  visibleRight: number;
+  start: number;
+  end: number;
+  selecting: boolean;
+}
+
 interface SuppressedInterval {
   details: IntervalDetails;
   id: string;
@@ -1589,6 +1602,10 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
   const canvasRef = useRef<HTMLDivElement>(null);
   const pendingCenterRef = useRef<number | null>(null);
   const rulerPanRef = useRef<{ clientX: number; scrollLeft: number } | null>(null);
+  const selectionRef = useRef<RangeSelection | null>(null);
+  const suppressedClickRef = useRef<number | null>(null);
+  const [selectionState, setSelection] = useState<RangeSelection | null>(null);
+  const selection = selectionState?.model === swimlane ? selectionState : null;
   const hoverFrameRef = useRef<number | null>(null);
   const pointerPositionRef = useRef<PointerPosition | null>(null);
   const pointerTargetRef = useRef<HTMLElement | null>(null);
@@ -1656,6 +1673,222 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
     setHoverCursor(null);
   }, []);
 
+  const clearSelectionGesture = useCallback((): void => {
+    // A cancelled drag can still generate a click when its mouse button is released.
+    if (selectionRef.current?.selecting) {
+      suppressedClickRef.current = selectionRef.current.pointerId;
+    }
+    selectionRef.current = null;
+  }, []);
+
+  const cancelSelection = useCallback((): void => {
+    clearSelectionGesture();
+    setSelection(null);
+  }, [clearSelectionGesture]);
+
+  const clockBounds = useCallback(() => {
+    const viewport = viewportRef.current;
+    const canvas = canvasRef.current;
+    if (!viewport || !canvas) return null;
+    const viewportRect = viewport.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const contentLeft = viewportRect.left + viewport.clientLeft;
+    const contentTop = viewportRect.top + viewport.clientTop;
+    const clockLeft = canvasRect.left + CANVAS_HORIZONTAL_PADDING + LABEL_COLUMN_WIDTH;
+    return {
+      clockLeft,
+      visibleLeft: Math.max(
+        0,
+        clockLeft,
+        contentLeft + LABEL_COLUMN_WIDTH + CANVAS_HORIZONTAL_PADDING
+      ),
+      visibleRight: Math.min(
+        window.innerWidth,
+        clockLeft + clockWidth,
+        contentLeft + viewport.clientWidth
+      ),
+      visibleTop: Math.max(0, contentTop, canvasRect.top),
+      visibleBottom: Math.min(
+        window.innerHeight,
+        contentTop + viewport.clientHeight,
+        canvasRect.bottom
+      ),
+      rulerBottom: canvasRect.top + 8 + RULER_HEIGHT,
+    };
+  }, [clockWidth]);
+
+  const isPlotTarget = useCallback((target: Element | null): boolean => {
+    if (
+      !target ||
+      !canvasRef.current?.contains(target) ||
+      target.closest('details, [data-swimlane-label]')
+    )
+      return false;
+    // Interval buttons remain valid drag origins; other controls are excluded.
+    return (
+      !target.closest('button, input, select, textarea, a, summary') ||
+      !!target.closest('[data-swimlane-lane-id]')
+    );
+  }, []);
+
+  const beginSelection = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      const viewport = viewportRef.current;
+      const target = event.target instanceof Element ? event.target : null;
+      const bounds = clockBounds();
+      if (
+        !viewport ||
+        !bounds ||
+        !isPlotTarget(target) ||
+        target?.closest('[data-testid="swimlane-time-ruler"]') ||
+        event.button !== 0 ||
+        event.pointerType !== 'mouse' ||
+        !event.isPrimary
+      )
+        return;
+      const { visibleLeft, visibleRight, clockLeft } = bounds;
+      if (
+        visibleRight <= visibleLeft ||
+        event.clientX < visibleLeft ||
+        event.clientX > visibleRight ||
+        event.clientY < Math.max(bounds.visibleTop, bounds.rulerBottom) ||
+        event.clientY >= bounds.visibleBottom
+      )
+        return;
+      // Blank canvas has no interval's user-select rule. Stop the browser from
+      // selecting surrounding text, while preserving interval focus and clicks.
+      if (!target?.closest('[data-swimlane-lane-id]')) event.preventDefault();
+      selectionRef.current = {
+        model: swimlane,
+        pointerId: event.pointerId,
+        originX: event.clientX,
+        clockLeft,
+        clockWidth,
+        visibleLeft,
+        visibleRight,
+        start: (event.clientX - clockLeft) / clockWidth,
+        end: (event.clientX - clockLeft) / clockWidth,
+        selecting: false,
+      };
+    },
+    [clockBounds, clockWidth, isPlotTarget, swimlane]
+  );
+
+  useEffect(() => {
+    const update = (event: globalThis.PointerEvent): RangeSelection | null => {
+      const current = selectionRef.current;
+      if (current?.pointerId !== event.pointerId) return null;
+      const next = {
+        ...current,
+        selecting: current.selecting || Math.abs(event.clientX - current.originX) >= 5,
+        end: clamp(
+          (clamp(event.clientX, current.visibleLeft, current.visibleRight) - current.clockLeft) /
+            current.clockWidth,
+          0,
+          1
+        ),
+      };
+      selectionRef.current = next;
+      if (next.selecting) {
+        event.preventDefault();
+        clearHoverCursor();
+        closeTooltip();
+        setSelection(next);
+      }
+      return next;
+    };
+    const move = (event: globalThis.PointerEvent): void => {
+      if (selectionRef.current?.pointerId !== event.pointerId) return;
+      if ((event.buttons & 1) === 0) {
+        cancelSelection();
+        return;
+      }
+      update(event);
+    };
+    const finish = (event: globalThis.PointerEvent): void => {
+      const current = update(event);
+      if (!current) return;
+      cancelSelection();
+      if (!current.selecting) return;
+      const span = Math.abs(current.end - current.start);
+      if (span <= 0 || axisDuration === 0) return;
+      const center = (current.start + current.end) / 2;
+      const nextLevel = clamp(Math.floor(Math.log2(1 / span)), boundedZoomLevel, maxZoomLevel);
+      if (nextLevel === boundedZoomLevel) {
+        const viewport = viewportRef.current;
+        if (viewport) {
+          viewport.scrollLeft = clamp(
+            center * clockWidth - fitClockWidth / 2,
+            0,
+            Math.max(0, clockWidth - fitClockWidth)
+          );
+          viewport.dispatchEvent(new Event('scroll'));
+        }
+      } else {
+        pendingCenterRef.current = center;
+        setZoomLevel(nextLevel);
+      }
+    };
+    const suppressClick = (event: globalThis.MouseEvent): void => {
+      if (suppressedClickRef.current === null || event.detail === 0 || event.button !== 0) return;
+      if ('pointerId' in event && event.pointerId !== suppressedClickRef.current) return;
+      suppressedClickRef.current = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') cancelSelection();
+    };
+    const cancelPointer = (event: globalThis.PointerEvent): void => {
+      if (selectionRef.current?.pointerId === event.pointerId) cancelSelection();
+    };
+    const clearSuppression = (event: globalThis.PointerEvent): void => {
+      if (event.button === 0 && event.isPrimary) suppressedClickRef.current = null;
+    };
+    window.addEventListener('pointerdown', clearSuppression, true);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', cancelPointer);
+    window.addEventListener('blur', cancelSelection);
+    window.addEventListener('resize', cancelSelection);
+    window.addEventListener('scroll', cancelSelection, true);
+    window.addEventListener('keydown', escape);
+    window.addEventListener('click', suppressClick, true);
+    return () => {
+      selectionRef.current = null;
+      window.removeEventListener('pointerdown', clearSuppression, true);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', cancelPointer);
+      window.removeEventListener('blur', cancelSelection);
+      window.removeEventListener('resize', cancelSelection);
+      window.removeEventListener('scroll', cancelSelection, true);
+      window.removeEventListener('keydown', escape);
+      window.removeEventListener('click', suppressClick, true);
+    };
+  }, [
+    axisDuration,
+    boundedZoomLevel,
+    cancelSelection,
+    clearHoverCursor,
+    clockWidth,
+    closeTooltip,
+    fitClockWidth,
+    maxZoomLevel,
+  ]);
+
+  useLayoutEffect(() => {
+    // Rendering already excludes the previous model's overlay; only its gesture needs cleanup.
+    clearSelectionGesture();
+  }, [clearSelectionGesture, swimlane]);
+
+  useEffect(
+    () => () => {
+      suppressedClickRef.current = null;
+    },
+    []
+  );
+
   const recomputeHoverCursor = useCallback(
     (position: PointerPosition, targetOverride?: EventTarget | null): void => {
       const viewport = viewportRef.current;
@@ -1672,30 +1905,28 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
             ? document.elementFromPoint(position.clientX, position.clientY)
             : pointerTargetRef.current;
       const clockRegion = hitTarget?.closest<HTMLElement>('[data-swimlane-clock-region="true"]');
-      if (!clockRegion || !canvas.contains(clockRegion)) {
+      const bounds = clockBounds();
+      if (!isPlotTarget(hitTarget ?? null) || !bounds) {
         clearHoverCursor();
         return;
       }
 
-      const clockRect = clockRegion.getBoundingClientRect();
       const insideClock =
-        position.clientX >= clockRect.left &&
-        position.clientX <= clockRect.right &&
-        position.clientY >= clockRect.top &&
-        position.clientY <= clockRect.bottom;
-      if (!insideClock || !Number.isFinite(clockRect.width) || clockRect.width <= 0) {
+        position.clientX >= bounds.visibleLeft &&
+        position.clientX <= bounds.visibleRight &&
+        position.clientY >= bounds.visibleTop &&
+        position.clientY < bounds.visibleBottom;
+      if (!insideClock) {
         clearHoverCursor();
         return;
       }
 
-      const elapsedPixel = clamp(position.clientX - clockRect.left, 0, clockRect.width);
-      const guideLeft = Math.min(elapsedPixel, Math.max(0, clockRect.width - 1));
+      const elapsedPixel = clamp(position.clientX - bounds.clockLeft, 0, clockWidth);
+      const guideLeft = Math.min(elapsedPixel, Math.max(0, clockWidth - 1));
       const elapsedMs =
-        axisDuration > 0
-          ? clamp((elapsedPixel / clockRect.width) * axisDuration, 0, axisDuration)
-          : 0;
-      const clockResolutionMs = axisDuration > 0 ? axisDuration / clockRect.width : 1;
-      const laneId = clockRegion.dataset.swimlaneLaneId;
+        axisDuration > 0 ? clamp((elapsedPixel / clockWidth) * axisDuration, 0, axisDuration) : 0;
+      const clockResolutionMs = axisDuration > 0 ? axisDuration / clockWidth : 1;
+      const laneId = clockRegion?.dataset.swimlaneLaneId;
       const contextSize =
         contextStripsVisible && laneId
           ? contextSizeAt(laneContextTracks.get(laneId) ?? [], axisStart + elapsedMs)
@@ -1705,19 +1936,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         contextSize === undefined
           ? elapsedLabel
           : `${elapsedLabel} · ${formatTokensCompact(contextSize)} ctx`;
-      const viewportRect = viewport.getBoundingClientRect();
-      const contentLeft = viewportRect.left + viewport.clientLeft;
-      const contentTop = viewportRect.top + viewport.clientTop;
-      const contentRight = contentLeft + Math.max(0, viewport.clientWidth);
-      const contentBottom = contentTop + Math.max(0, viewport.clientHeight);
-      const visibleLeft = Math.max(
-        0,
-        contentLeft + LABEL_COLUMN_WIDTH + CANVAS_HORIZONTAL_PADDING,
-        clockRect.left
-      );
-      const visibleRight = Math.min(window.innerWidth, contentRight, clockRect.right);
-      const visibleTop = Math.max(0, contentTop);
-      const visibleBottom = Math.min(window.innerHeight, contentBottom);
+      const { visibleLeft, visibleRight, visibleTop, visibleBottom } = bounds;
       const availableWidth = Math.max(0, visibleRight - visibleLeft);
       const availableHeight = Math.max(0, visibleBottom - visibleTop);
       if (availableWidth <= 0 || availableHeight <= 0) {
@@ -1784,7 +2003,17 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         labelWidth,
       });
     },
-    [axisDuration, axisStart, clearHoverCursor, contextStripsVisible, laneContextTracks, tooltipId]
+    [
+      axisDuration,
+      axisStart,
+      clearHoverCursor,
+      clockBounds,
+      clockWidth,
+      contextStripsVisible,
+      isPlotTarget,
+      laneContextTracks,
+      tooltipId,
+    ]
   );
 
   const recomputeStoredHoverCursor = useCallback((): void => {
@@ -1811,7 +2040,10 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
-      if (event.pointerType === 'touch') {
+      if (
+        event.pointerType === 'touch' ||
+        !isPlotTarget(event.target instanceof Element ? event.target : null)
+      ) {
         clearHoverCursor();
         return;
       }
@@ -1820,7 +2052,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
       pointerTargetRef.current = event.target instanceof HTMLElement ? event.target : null;
       scheduleHoverCursorRecompute();
     },
-    [clearHoverCursor, scheduleHoverCursorRecompute]
+    [clearHoverCursor, isPlotTarget, scheduleHoverCursorRecompute]
   );
 
   useLayoutEffect(() => {
@@ -1853,10 +2085,20 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
     };
     measureAndRecompute();
     if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measureAndRecompute);
+    const observer = new ResizeObserver(() => {
+      cancelSelection();
+      measureAndRecompute();
+    });
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [boundedZoomLevel, closeTooltip, fitClockWidth, recomputeStoredHoverCursor, swimlane]);
+  }, [
+    boundedZoomLevel,
+    cancelSelection,
+    closeTooltip,
+    fitClockWidth,
+    recomputeStoredHoverCursor,
+    swimlane,
+  ]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -2305,10 +2547,15 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
             <span>300k+</span>
           </span>
         </label>
+        <span style={{ color: 'var(--color-text-muted)' }}>
+          Drag timeline to zoom · Esc cancels
+        </span>
       </div>
       <span className="sr-only" id={rulerDescriptionId}>
         Use the keyboard or native scrollbars to navigate the timeline. Drag the elapsed-time ruler
-        horizontally for precise panning.
+        horizontally for precise panning. Drag across the plotting area, including empty space, to
+        zoom into a time range; press Escape to cancel. Use the zoom controls to zoom with the
+        keyboard or zoom back out.
       </span>
       <div
         ref={viewportRef}
@@ -2316,6 +2563,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         aria-label="Swimlane timeline viewport"
         data-testid="swimlane-horizontal-scroll"
         onPointerCancel={clearHoverCursor}
+        onPointerDown={beginSelection}
         onPointerLeave={clearHoverCursor}
         onPointerMove={handlePointerMove}
         onScroll={(event) => {
@@ -2337,13 +2585,17 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
           data-testid="swimlane-clock-canvas"
           style={{
             boxSizing: 'border-box',
+            minHeight: '100%',
             padding: `8px ${CANVAS_HORIZONTAL_PADDING}px 18px`,
             position: 'relative',
             width: `${LABEL_COLUMN_WIDTH + clockWidth + CANVAS_HORIZONTAL_PADDING * 2}px`,
           }}
         >
           <div data-testid="swimlane-axis" style={{ ...rowStyle, height: '28px' }}>
-            <div style={{ ...labelStyle, color: 'var(--color-text)', fontWeight: 600 }}>
+            <div
+              data-swimlane-label="true"
+              style={{ ...labelStyle, color: 'var(--color-text)', fontWeight: 600 }}
+            >
               Elapsed
             </div>
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Dragging is optional; keyboard users scroll the focused viewport. */}
@@ -2405,6 +2657,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
 
           <div data-testid="swimlane-parent-row" style={rowStyle}>
             <div
+              data-swimlane-label="true"
               style={{ ...labelStyle, color: 'var(--color-text)', fontWeight: 600 }}
               title="Parent"
             >
@@ -2415,7 +2668,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
               data-swimlane-clock-region="true"
               data-swimlane-lane-id={PARENT_LANE_ID}
               data-testid="swimlane-parent-clock"
-              style={clockStyle}
+              style={{ ...clockStyle, userSelect: 'none' }}
             >
               <div aria-hidden="true" style={baseTrackStyle} />
               {parentContextSummary && (
@@ -2535,6 +2788,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
               >
                 <div
                   aria-label={row.label}
+                  data-swimlane-label="true"
                   style={{
                     ...labelStyle,
                     color: 'var(--color-text)',
@@ -2567,7 +2821,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                   data-swimlane-clock-region="true"
                   data-swimlane-lane-id={row.id}
                   data-testid={`swimlane-child-clock-${row.id}`}
-                  style={clockStyle}
+                  style={{ ...clockStyle, userSelect: 'none' }}
                 >
                   <div aria-hidden="true" style={baseTrackStyle} />
                   {row.activations.map((activation) => {
@@ -2802,16 +3056,33 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
               )}
             </details>
           )}
-          {hoverCursor && (
+          {selection?.selecting && (
+            <div
+              aria-hidden="true"
+              data-testid="swimlane-range-selection"
+              style={{
+                backgroundColor: 'var(--error-highlight-ring)',
+                opacity: 0.2,
+                bottom: 0,
+                left: `${CANVAS_HORIZONTAL_PADDING + LABEL_COLUMN_WIDTH + Math.min(selection.start, selection.end) * clockWidth}px`,
+                pointerEvents: 'none',
+                position: 'absolute',
+                top: 0,
+                width: `${Math.abs(selection.end - selection.start) * clockWidth}px`,
+                zIndex: 5,
+              }}
+            />
+          )}
+          {hoverCursor && !selection?.selecting && (
             <div
               aria-hidden="true"
               data-testid="swimlane-hover-cursor"
               style={{
-                height: `${RULER_HEIGHT + (swimlane.childRows.length + 1) * ROW_HEIGHT}px`,
+                bottom: 0,
                 left: `${CANVAS_HORIZONTAL_PADDING + LABEL_COLUMN_WIDTH}px`,
                 pointerEvents: 'none',
                 position: 'absolute',
-                top: '8px',
+                top: 0,
                 width: `${clockWidth}px`,
               }}
             >

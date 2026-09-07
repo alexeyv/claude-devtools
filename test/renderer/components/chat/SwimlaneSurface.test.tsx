@@ -263,6 +263,41 @@ async function pointerLeave(target: HTMLElement): Promise<void> {
   );
 }
 
+function selectionEvent(
+  type: string,
+  clientX: number,
+  overrides: Record<string, unknown> = {}
+): PointerEvent {
+  const event = new PointerEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX,
+    clientY: 50,
+    button: 0,
+    buttons: type === 'pointerup' ? 0 : 1,
+  });
+  for (const [key, value] of Object.entries({
+    pointerType: 'mouse',
+    pointerId: 7,
+    isPrimary: true,
+    ...overrides,
+  })) {
+    Object.defineProperty(event, key, { configurable: true, value });
+  }
+  return event;
+}
+
+async function selectPointer(
+  target: EventTarget,
+  type: string,
+  x: number,
+  overrides: Record<string, unknown> = {}
+): Promise<void> {
+  await act(async () => {
+    target.dispatchEvent(selectionEvent(type, x, overrides));
+  });
+}
+
 async function pointerCancel(target: HTMLElement, pointerType = 'mouse'): Promise<void> {
   const event = new PointerEvent('pointercancel', { bubbles: true });
   Object.defineProperty(event, 'pointerType', { configurable: true, value: pointerType });
@@ -351,7 +386,10 @@ beforeEach(() => {
         viewportLeft - (viewport?.scrollLeft ?? 0),
         viewportTop - (viewport?.scrollTop ?? 0),
         Number.parseFloat(this.style.width) || clockWidth + 184 + 32,
-        138
+        Math.max(
+          viewportClientHeightOverride ?? 300,
+          8 + 28 + this.querySelectorAll('[data-swimlane-lane-id]').length * 34 + 18
+        )
       );
     }
     if (this.dataset.clockWidth !== undefined) {
@@ -408,7 +446,19 @@ beforeEach(() => {
           clientY >= rect.top &&
           clientY <= rect.bottom
         );
-      }) ?? null
+      }) ??
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="swimlane-clock-canvas"]')
+      ).find((canvas) => {
+        const rect = canvas.getBoundingClientRect();
+        return (
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY < rect.bottom
+        );
+      }) ??
+      null
     );
   });
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function () {
@@ -437,6 +487,370 @@ afterEach(() => {
 });
 
 describe('SwimlaneSurface', () => {
+  it('prevents text selection only for valid blank-plot mouse origins', async () => {
+    const model = mixedModel();
+    model.parentSegments[0].target = { kind: 'turn', groupId: 'work' };
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const canvas = element(host, 'swimlane-clock-canvas');
+    const blankDown = selectionEvent('pointerdown', 380, { clientY: 250 });
+    await act(async () => {
+      canvas.dispatchEvent(blankDown);
+    });
+    expect(blankDown.defaultPrevented).toBe(true);
+    await selectPointer(window, 'pointerup', 380, { clientY: 250 });
+
+    const interval = element(host, 'swimlane-parent-segment-work');
+    const intervalDown = selectionEvent('pointerdown', 250);
+    await act(async () => {
+      interval.dispatchEvent(intervalDown);
+    });
+    expect(intervalDown.defaultPrevented).toBe(false);
+    await selectPointer(window, 'pointerup', 250);
+    await click(interval);
+    expect(onTarget).toHaveBeenCalledWith({ kind: 'turn', groupId: 'work' });
+
+    for (const [target, x, overrides] of [
+      [element(host, 'swimlane-parent-row').firstElementChild!, 100, {}],
+      [canvas, 380, { clientY: 250, pointerType: 'touch' }],
+      [canvas, 380, { clientY: 250, button: 2 }],
+      [canvas, 100, { clientY: 250 }],
+    ] as const) {
+      const down = selectionEvent('pointerdown', x, overrides);
+      await act(async () => {
+        target.dispatchEvent(down);
+      });
+      expect(down.defaultPrevented).toBe(false);
+    }
+  });
+
+  it.each([150, 280])('hovers and selects empty plotting space at y=%s', async (clientY) => {
+    const model = mixedModel();
+    model.childRows = [];
+    const host = await render(model);
+    const canvas = element(host, 'swimlane-clock-canvas');
+    expect(canvas.style.minHeight).toBe('100%');
+    await pointerMove(canvas, 380, clientY);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.50s');
+    const cursor = element(host, 'swimlane-hover-cursor');
+    expect(cursor.style.top).toBe('0px');
+    expect(cursor.style.bottom).toBe('0px');
+    expect(cursor.style.height).toBe('');
+    expect(cursor.style.maxHeight).toBe('');
+    await selectPointer(canvas, 'pointerdown', 380, { clientY });
+    await selectPointer(window, 'pointermove', 560, { clientY });
+    const selection = element(host, 'swimlane-range-selection');
+    expect(selection.style.top).toBe('0px');
+    expect(selection.style.bottom).toBe('0px');
+    expect(selection.style.height).toBe('');
+    expect(selection.style.maxHeight).toBe('');
+    expect(selection.style.width).toBe('180px');
+    await selectPointer(window, 'pointerup', 560, { clientY });
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('400%');
+    expect(element(host, 'swimlane-horizontal-scroll').scrollLeft).toBe(720);
+  });
+
+  it('keeps empty-space times aligned after horizontal zoom, scroll, and viewport resize', async () => {
+    const host = await render(mixedModel());
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const canvas = element(host, 'swimlane-clock-canvas');
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 2);
+    viewport.scrollLeft = 900;
+    await pointerMove(canvas, 380, 250);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('3.750s');
+    expect(element(host, 'swimlane-hover-guide').style.left).toBe('1080px');
+    await selectPointer(canvas, 'pointerdown', 380, { clientY: 250 });
+    await selectPointer(window, 'pointerup', 560, { clientY: 250 });
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('1600%');
+    expect(viewport.scrollLeft).toBe(4320);
+    viewportClientHeightOverride = 500;
+    await triggerResizeObservers();
+    await pointerMove(canvas, 380, 480);
+    const guide = element(host, 'swimlane-hover-guide');
+    expect(canvas.getBoundingClientRect().left + 200 + Number.parseFloat(guide.style.left)).toBe(
+      380
+    );
+    await selectPointer(canvas, 'pointerdown', 380, { clientY: 480 });
+    await selectPointer(window, 'pointermove', 560, { clientY: 480 });
+    viewportClientHeightOverride = 350;
+    await triggerResizeObservers();
+    expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+  });
+
+  it('covers the full scrolled content and selects plotting space after the ruler scrolls away', async () => {
+    const model = mixedModel();
+    model.childRows = Array.from({ length: 20 }, (_, index) => ({
+      ...model.childRows[0],
+      id: `row-${index}`,
+      activations: [],
+    }));
+    const host = await render(model);
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    const canvas = element(host, 'swimlane-clock-canvas');
+    viewport.scrollTop = 400;
+    await act(async () => viewport.dispatchEvent(new Event('scroll')));
+    await pointerMove(canvas, 380, 5);
+    const cursor = element(host, 'swimlane-hover-cursor');
+    expect(cursor.style.top).toBe('0px');
+    expect(cursor.style.bottom).toBe('0px');
+    expect(cursor.style.height).toBe('');
+    expect(cursor.style.maxHeight).toBe('');
+    expect(canvas.getBoundingClientRect().top).toBeLessThan(0);
+    expect(canvas.getBoundingClientRect().bottom).toBeGreaterThan(300);
+    await selectPointer(canvas, 'pointerdown', 380, { clientY: 5 });
+    await selectPointer(window, 'pointermove', 560, { clientY: 5 });
+    const selection = element(host, 'swimlane-range-selection');
+    expect(selection.style.top).toBe('0px');
+    expect(selection.style.bottom).toBe('0px');
+    expect(selection.style.height).toBe('');
+    expect(selection.style.maxHeight).toBe('');
+    viewport.scrollTop = 410;
+    await act(async () => viewport.dispatchEvent(new Event('scroll')));
+    expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+    await selectPointer(canvas, 'pointerdown', 380, { clientY: 5 });
+    await selectPointer(window, 'pointerup', 560, { clientY: 5 });
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('400%');
+  });
+
+  it.each([
+    [380, 560],
+    [560, 380],
+  ])('zooms a lane range from %s to %s and centers the selected times', async (start, end) => {
+    const host = await render(mixedModel());
+    const lane = element(host, 'swimlane-parent-clock');
+    await selectPointer(lane, 'pointerdown', start);
+    await selectPointer(window, 'pointermove', end);
+    const overlay = element(host, 'swimlane-range-selection');
+    expect(overlay.style.width).toBe('180px');
+    expect(overlay.style.pointerEvents).toBe('none');
+    await selectPointer(window, 'pointerup', end);
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('400%');
+    expect(element(host, 'swimlane-horizontal-scroll').scrollLeft).toBe(720);
+    expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+  });
+
+  it('maps a scrolled child lane to absolute times and recenters even at maximum zoom', async () => {
+    const host = await render(mixedModel());
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    await setRangeValue(range, 2);
+    viewport.scrollLeft = 900;
+    await selectPointer(element(host, 'swimlane-child-clock-child'), 'pointerdown', 380, {
+      clientY: 80,
+    });
+    await selectPointer(window, 'pointermove', 560);
+    await selectPointer(window, 'pointerup', 560);
+    expect(range.value).toBe('4');
+    expect(viewport.scrollLeft).toBe(4320);
+    await setRangeValue(range, Number(range.max));
+    viewport.scrollLeft = 1000;
+    await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 220);
+    await selectPointer(window, 'pointerup', 230);
+    expect(range.value).toBe(range.max);
+    expect(viewport.scrollLeft).toBeCloseTo(665);
+  });
+
+  it('preserves short clicks and keyboard activation, suppressing the completed drag click only', async () => {
+    const onTarget = vi.fn();
+    const model = mixedModel();
+    model.parentSegments[0].target = { kind: 'turn', groupId: 'work' };
+    const host = await render(model, onTarget);
+    const interval = element(host, 'swimlane-parent-segment-work');
+    await selectPointer(interval, 'pointerdown', 250);
+    await selectPointer(window, 'pointerup', 254);
+    await click(interval);
+    expect(onTarget).toHaveBeenCalledTimes(1);
+    await selectPointer(interval, 'pointerdown', 250);
+    await selectPointer(window, 'pointermove', 300);
+    await act(async () => {
+      window.dispatchEvent(selectionEvent('pointerup', 300));
+      interval.dispatchEvent(selectionEvent('click', 300, { detail: 1 }));
+    });
+    expect(onTarget).toHaveBeenCalledTimes(1);
+    await click(interval);
+    expect(onTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['Escape', 'blur', 'pointercancel', 'resize', 'scroll', 'observer', 'model'])(
+    'cancels selection on %s without changing zoom',
+    async (reason) => {
+      const host = await render(mixedModel(), undefined, 'session');
+      await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 380);
+      await selectPointer(window, 'pointermove', 560);
+      if (reason === 'observer') await triggerResizeObservers();
+      else if (reason === 'model') await rerender(mixedModel(), undefined, 'session');
+      else if (reason === 'pointercancel') await selectPointer(window, 'pointercancel', 560);
+      else
+        await act(async () => {
+          window.dispatchEvent(
+            reason === 'Escape'
+              ? new KeyboardEvent('keydown', { key: 'Escape' })
+              : new Event(reason)
+          );
+        });
+      await selectPointer(window, 'pointerup', 560);
+      expect(element(host, 'swimlane-zoom-output').textContent).toBe('100%');
+      expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+      await click(element(host, 'swimlane-zoom-in'));
+      expect(element(host, 'swimlane-zoom-output').textContent).toBe('200%');
+    }
+  );
+
+  it.each(['Escape', 'lost-buttons'])(
+    'suppresses a cancelled drag click after %s, but preserves keyboard and subsequent mouse clicks',
+    async (reason) => {
+      const model = mixedModel();
+      model.parentSegments[0].target = { kind: 'turn', groupId: 'work' };
+      const onTarget = vi.fn();
+      const host = await render(model, onTarget);
+      const interval = element(host, 'swimlane-parent-segment-work');
+      await selectPointer(interval, 'pointerdown', 250);
+      await selectPointer(window, 'pointermove', 300);
+      if (reason === 'Escape') {
+        await act(async () => {
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        });
+      } else await selectPointer(window, 'pointermove', 300, { buttons: 0 });
+      expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+      await click(interval);
+      expect(onTarget).toHaveBeenCalledTimes(1);
+      await selectPointer(window, 'pointerup', 300);
+      await selectPointer(interval, 'click', 300, { detail: 1 });
+      expect(onTarget).toHaveBeenCalledTimes(1);
+      expect(element(host, 'swimlane-zoom-output').textContent).toBe('100%');
+      await selectPointer(interval, 'pointerdown', 250);
+      await selectPointer(interval, 'pointerup', 250);
+      await selectPointer(interval, 'click', 250, { detail: 1 });
+      expect(onTarget).toHaveBeenCalledTimes(2);
+      // A new mouse down also expires suppression when a cancelled gesture has no click.
+      await selectPointer(interval, 'pointerdown', 250);
+      await selectPointer(window, 'pointermove', 300);
+      await selectPointer(window, 'pointercancel', 300);
+      await selectPointer(interval, 'pointerdown', 250);
+      await selectPointer(interval, 'pointerup', 250);
+      await selectPointer(interval, 'click', 250, { detail: 1 });
+      expect(onTarget).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it('retains mouse selection when an unrelated pointer is cancelled', async () => {
+    const host = await render(mixedModel());
+    await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 380);
+    await selectPointer(window, 'pointermove', 560);
+    await selectPointer(window, 'pointercancel', 560, { pointerId: 8, pointerType: 'touch' });
+    expect(element(host, 'swimlane-range-selection')).toBeTruthy();
+    await selectPointer(window, 'pointerup', 560);
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('400%');
+  });
+
+  it('chooses the closest containing level for an arbitrary 220px range', async () => {
+    const host = await render(mixedModel());
+    await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 380);
+    await selectPointer(window, 'pointerup', 600);
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('200%');
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    expect(viewport.scrollLeft).toBe(220);
+    const startPixel = (380 - 200) * 2;
+    const endPixel = (600 - 200) * 2;
+    expect(startPixel).toBeGreaterThanOrEqual(viewport.scrollLeft);
+    expect(endPixel).toBeLessThanOrEqual(viewport.scrollLeft + 720);
+  });
+
+  it('clips reverse selection at the sticky label edge on a scrolled clock', async () => {
+    const host = await render(mixedModel());
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 2);
+    const viewport = element(host, 'swimlane-horizontal-scroll');
+    viewport.scrollLeft = 900;
+    await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 560);
+    await selectPointer(window, 'pointermove', -200);
+    expect(Number.parseFloat(element(host, 'swimlane-range-selection').style.width)).toBeCloseTo(
+      360
+    );
+    await selectPointer(window, 'pointerup', -200);
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('800%');
+    expect(viewport.scrollLeft).toBe(1800);
+  });
+
+  it('excludes hidden interval details and preserves selectable label/detail text', async () => {
+    const model = mixedModel();
+    model.evidence = [
+      {
+        id: 'hidden',
+        type: 'tool-execution',
+        startTime: at(1),
+        endTime: at(1.001),
+        durationMs: 1,
+        target: { kind: 'turn', groupId: 'hidden' },
+      },
+    ];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const details = element(host, 'swimlane-suppressed-activity');
+    details.setAttribute('open', '');
+    const button = details.querySelector('button')!;
+    await selectPointer(button, 'pointerdown', 380, { clientY: 155 });
+    await selectPointer(window, 'pointermove', 600, { clientY: 155 });
+    await selectPointer(window, 'pointerup', 600, { clientY: 155 });
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('100%');
+    await click(button);
+    expect(onTarget).toHaveBeenCalledWith({ kind: 'turn', groupId: 'hidden' });
+    expect(element(host, 'swimlane-clock-canvas').style.userSelect).toBe('');
+    expect(details.style.userSelect).toBe('');
+    expect(element(host, 'swimlane-parent-clock').style.userSelect).toBe('none');
+  });
+
+  it.each([{ pointerType: 'touch' }, { pointerType: 'pen' }, { button: 2 }, { isPrimary: false }])(
+    'ignores unsupported selection input %o',
+    async (input) => {
+      const host = await render(mixedModel());
+      await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 380, input);
+      await selectPointer(window, 'pointerup', 560);
+      expect(element(host, 'swimlane-zoom-output').textContent).toBe('100%');
+    }
+  );
+
+  it('clamps outside releases to visible clock edges without zooming out', async () => {
+    const host = await render(mixedModel());
+    const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+    await setRangeValue(range, 2);
+    await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 201);
+    await selectPointer(window, 'pointermove', 2000);
+    expect(Number.parseFloat(element(host, 'swimlane-range-selection').style.width)).toBe(735);
+    await selectPointer(window, 'pointerup', 2000);
+    expect(range.value).toBe('2');
+  });
+
+  it('excludes ruler, labels, toolbar, and viewport scrollbars from selection', async () => {
+    const host = await render(mixedModel());
+    for (const target of [
+      element(host, 'swimlane-time-ruler'),
+      element(host, 'swimlane-parent-clock').previousElementSibling!,
+      element(host, 'swimlane-zoom-controls'),
+      element(host, 'swimlane-horizontal-scroll'),
+    ]) {
+      await selectPointer(target, 'pointerdown', 380);
+      await selectPointer(window, 'pointerup', 560);
+      expect(element(host, 'swimlane-zoom-output').textContent).toBe('100%');
+    }
+  });
+
+  it('requires five horizontal pixels and keeps zero-duration selections finite', async () => {
+    const model = mixedModel();
+    model.endTime = model.startTime;
+    model.durationMs = 0;
+    const host = await render(model);
+    const lane = element(host, 'swimlane-parent-clock');
+    await selectPointer(lane, 'pointerdown', 380);
+    await selectPointer(window, 'pointermove', 384, { clientY: 200 });
+    expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+    await selectPointer(window, 'pointermove', 385);
+    expect(Number.parseFloat(element(host, 'swimlane-range-selection').style.width)).toBeCloseTo(5);
+    await selectPointer(window, 'pointerup', 385);
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('100%');
+    expect(element(host, 'swimlane-horizontal-scroll').scrollLeft).toBe(0);
+  });
+
   it('renders compact, strongly differentiated lanes on one shared clock', async () => {
     const host = await render(mixedModel());
 
@@ -538,8 +952,9 @@ describe('SwimlaneSurface', () => {
     expect(cursor.getAttribute('aria-hidden')).toBe('true');
     expect(cursor.style.pointerEvents).toBe('none');
     expect(cursor.style.left).toBe('200px');
-    expect(cursor.style.top).toBe('8px');
-    expect(cursor.style.height).toBe('130px');
+    expect(cursor.style.top).toBe('0px');
+    expect(cursor.style.bottom).toBe('0px');
+    expect(cursor.style.height).toBe('');
     expect(guide.style.left).toBe('180px');
     expect(guide.style.backgroundColor).toBe('var(--error-highlight-ring)');
     expect(guide.style.pointerEvents).toBe('none');
@@ -700,7 +1115,7 @@ describe('SwimlaneSurface', () => {
 
     viewport.scrollTop = 140;
     await act(async () => viewport.dispatchEvent(new Event('scroll')));
-    expect(host.querySelector('[data-testid="swimlane-hover-cursor"]')).toBeNull();
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('1.50s');
   });
 
   it('keeps zero-duration feedback finite and clamps its label inside a narrow viewport', async () => {
