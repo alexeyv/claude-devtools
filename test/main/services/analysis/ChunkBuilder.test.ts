@@ -11,13 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ChunkBuilder } from '../../../../src/main/services/analysis/ChunkBuilder';
-import {
-  SWIMLANE_SCHEMA_VERSION,
-  isAIChunk,
-  isCompactChunk,
-  isSystemChunk,
-  isUserChunk,
-} from '../../../../src/main/types';
+import { isAIChunk, isCompactChunk, isSystemChunk, isUserChunk } from '../../../../src/main/types';
 import { extractToolCalls } from '../../../../src/main/utils/toolExtraction';
 import type { ParsedMessage, Process } from '../../../../src/main/types';
 
@@ -561,7 +555,7 @@ describe('ChunkBuilder', () => {
         }>;
       };
 
-      expect(serialized.schemaVersion).toBe(SWIMLANE_SCHEMA_VERSION);
+      expect(serialized.schemaVersion).toBe(3);
       expect(serialized.evidence.find((evidence) => evidence.toolUseId === 'read-1')).toMatchObject(
         {
           type: 'tool-execution',
