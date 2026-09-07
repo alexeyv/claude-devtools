@@ -800,6 +800,76 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-parent-clock').style.userSelect).toBe('none');
   });
 
+  it.each(['during drag', 'after zoom'])(
+    'accepts a new blank-area drag after Escape %s',
+    async (when) => {
+      const model = mixedModel();
+      model.evidence = [
+        {
+          id: 'hidden',
+          type: 'tool-execution',
+          startTime: at(1),
+          endTime: at(1.001),
+          durationMs: 1,
+        },
+      ];
+      const host = await render(model);
+      element(host, 'swimlane-suppressed-activity').setAttribute('open', '');
+      const canvas = element(host, 'swimlane-clock-canvas');
+      const range = element(host, 'swimlane-zoom-range') as HTMLInputElement;
+      await focus(element(host, 'swimlane-parent-segment-work'));
+      await selectPointer(element(host, 'swimlane-parent-clock'), 'pointerdown', 380);
+      await selectPointer(window, 'pointermove', 560);
+      if (when === 'after zoom') {
+        await selectPointer(window, 'pointerup', 560);
+        expect(range.value).toBe('2');
+      }
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      });
+      if (when === 'during drag') await selectPointer(window, 'pointerup', 560);
+      expect(host.querySelector('[data-testid="swimlane-range-selection"]')).toBeNull();
+      expect(range.value).toBe(when === 'during drag' ? '0' : '2');
+      const previousLevel = Number(range.value);
+      // No intervening lane hover: immediately start another gesture in empty space.
+      await selectPointer(canvas, 'pointerdown', 380, { clientY: 250 });
+      await selectPointer(window, 'pointermove', 560, { clientY: 250 });
+      expect(element(host, 'swimlane-range-selection')).toBeTruthy();
+      await selectPointer(window, 'pointerup', 560, { clientY: 250 });
+      expect(Number(range.value)).toBe(previousLevel + 2);
+    }
+  );
+
+  it('bounds the evidence hit box to the fitted viewport rather than the zoomed canvas', async () => {
+    const model = mixedModel();
+    model.evidence = [
+      {
+        id: 'hidden',
+        type: 'tool-execution',
+        startTime: at(1),
+        endTime: at(1.001),
+        durationMs: 1,
+        label: 'x'.repeat(2000),
+        target: { kind: 'turn', groupId: 'hidden' },
+      },
+    ];
+    const onTarget = vi.fn();
+    const host = await render(model, onTarget);
+    const details = element(host, 'swimlane-suppressed-activity');
+    details.setAttribute('open', '');
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 3);
+    expect(details.style.width).toBe('fit-content');
+    expect(details.style.boxSizing).toBe('border-box');
+    expect(details.style.maxWidth).toBe('720px');
+    expect(details.style.overflowWrap).toBe('anywhere');
+    expect(details.style.minWidth).toBe('');
+    viewportClientWidthOverride = 536;
+    await triggerResizeObservers();
+    expect(details.style.maxWidth).toBe('320px');
+    await click(details.querySelector('button')!);
+    expect(onTarget).toHaveBeenCalledWith({ kind: 'turn', groupId: 'hidden' });
+  });
+
   it.each([{ pointerType: 'touch' }, { pointerType: 'pen' }, { button: 2 }, { isPrimary: false }])(
     'ignores unsupported selection input %o',
     async (input) => {

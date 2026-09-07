@@ -3003,10 +3003,15 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
               data-suppressed-count={suppressedCount}
               data-testid="swimlane-suppressed-activity"
               style={{
+                boxSizing: 'border-box',
                 color: 'var(--color-text-muted)',
                 fontSize: '10px',
                 marginLeft: `${LABEL_COLUMN_WIDTH}px`,
+                // Offscreen evidence must not leave a timeline-wide drag-blocking hit box.
+                maxWidth: `${fitClockWidth}px`,
+                overflowWrap: 'anywhere',
                 padding: '6px 8px 0',
+                width: 'fit-content',
               }}
             >
               <summary aria-label={`${suppressedCount} hidden evidence intervals`}>

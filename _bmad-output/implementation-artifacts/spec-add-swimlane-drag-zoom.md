@@ -68,6 +68,7 @@ context: []
 ## Spec Change Log
 
 - 2026-09-07: User explicitly expanded interaction from lanes to the entire plotting area and requested full-height timeline widgets. Updated approved intent and matrix accordingly. Keep zoom geometry, click suppression, cancellation, controls, and ruler panning from the verified implementation.
+- 2026-09-07 corrective follow-up: User reported intermittent drag failure after drag/Escape. Native inspection found expanded evidence text scrolled offscreen inside an unconstrained details block, whose invisible full-canvas hit box was excluded from plot gestures. Shrink-wrap that block, cap it to fitted viewport width, and wrap long labels. Preserve native keyboard focus and evidence navigation. Added fresh-drag-after-Escape tests both during selection and after committed zoom.
 
 ## Verification
 
@@ -88,9 +89,15 @@ Inspect the running app's selection highlight, zoom destination, ordinary click 
 - 2026-09-07 follow-up: User's active `ui.wt` session for Shortcut story 23057 was open in the native app and preserved. Confirmed elapsed hover in empty space and guide coverage from the timeline top to the viewport bottom by screenshot.
 - Final verification: 113 interaction/integration tests, typecheck, full repository lint, production build, and diff checks passed. Three independent review layers completed; prevented native text selection on blank-area drag origins and strengthened overlay tests against fixed-height regressions.
 - Native automation limitation: CUA drag emitted pointer movement with `buttons: 0`, confirmed using temporary diagnostic logs, correctly triggering lost-button cancellation. Removed all diagnostic code. Held-button zoom and selection overlay behavior are covered by the interaction tests; a full native held-button drag was not verified.
+- Corrective follow-up verification: 116 interaction/integration tests passed. Native screenshot at 800% zoom confirmed expanded evidence remained open, its text offscreen, and the elapsed cursor appeared below the lanes immediately after Escape. This exercises actual browser hit testing for the previously blocked area; held-button continuation is covered in component tests. Independent reviews identified long-label overflow and test assertion gaps, which were addressed.
+- Corrective follow-up typecheck, full lint, production build, and diff checks also passed.
 
 ## Suggested Review Order
 
+- Keep offscreen evidence from covering the blank timeline with an invisible interactive box.
+  [SwimlaneSurface.tsx:3005](../../src/renderer/components/chat/SwimlaneSurface.tsx#L3005)
+- Verify repeated drag after Escape, bounded evidence layout, resize, and long-label navigation.
+  [SwimlaneSurface.test.tsx:803](../../test/renderer/components/chat/SwimlaneSurface.test.tsx#L803)
 - Start with shared plotting bounds and full-area selection entry.
   [SwimlaneSurface.tsx:1689](../../src/renderer/components/chat/SwimlaneSurface.tsx#L1689)
 - Follow release handling, range containment, centering, and click suppression.
