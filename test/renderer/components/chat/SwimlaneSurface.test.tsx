@@ -2654,6 +2654,46 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-context-strip-child-first').style.height).toBe('4px');
   });
 
+  it('toggles every context strip off and back on from the controls row', async () => {
+    const model = mixedModel();
+    model.contextTrack = [
+      { startTime: at(0), endTime: at(2), startTokens: 40_000, endTokens: 44_000 },
+    ];
+    model.childRows[0].activations[0].contextTrack = [
+      { startTime: at(1), endTime: at(3), startTokens: 20_000, endTokens: 26_000 },
+    ];
+    model.childRows[1].activations[0].contextTrack = [
+      { startTime: at(2), endTime: at(5), startTokens: 10_000, endTokens: 10_000 },
+    ];
+    const host = await render(model);
+    const strips = (): number =>
+      host.querySelectorAll('[role="img"][data-testid^="swimlane-context-strip-"]').length;
+    const stripNodes = (): number =>
+      host.querySelectorAll('[data-testid^="swimlane-context-strip-"]').length;
+
+    const toggle = element(host, 'swimlane-context-toggle') as HTMLButtonElement;
+    expect(element(host, 'swimlane-zoom-controls').contains(toggle)).toBe(true);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(strips()).toBe(3);
+
+    await click(toggle);
+
+    expect(
+      (element(host, 'swimlane-context-toggle') as HTMLButtonElement).getAttribute('aria-pressed')
+    ).toBe('false');
+    expect(stripNodes()).toBe(0);
+    // The model still carries every lane's track; only the strips are hidden.
+    expect(element(host, 'swimlane-parent-clock')).toBeTruthy();
+    expect(element(host, 'swimlane-activation-child-first')).toBeTruthy();
+
+    await click(element(host, 'swimlane-context-toggle'));
+
+    expect(
+      (element(host, 'swimlane-context-toggle') as HTMLButtonElement).getAttribute('aria-pressed')
+    ).toBe('true');
+    expect(strips()).toBe(3);
+  });
+
   it('renders a useful parent-only clock with boundaries and no empty-state substitution', async () => {
     const model = mixedModel();
     model.childRows = [];

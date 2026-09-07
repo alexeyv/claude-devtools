@@ -1526,6 +1526,8 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
   const [hoveredInterval, setHoveredInterval] = useState<ActiveInterval | null>(null);
   const [focusedInterval, setFocusedInterval] = useState<ActiveInterval | null>(null);
   const [hoverCursor, setHoverCursor] = useState<HoverCursor | null>(null);
+  // Component-local like zoom: reopening the swimlane starts with strips on.
+  const [contextStripsVisible, setContextStripsVisible] = useState(true);
   const maxZoomLevel = maximumZoomLevel(axisDuration);
   const boundedZoomLevel = Math.min(zoomLevel, maxZoomLevel);
   const zoomFactor = 2 ** boundedZoomLevel;
@@ -1915,7 +1917,9 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
       intervalPixelWidth(segment.startTime, segment.endTime, axisStart, axisDuration, clockWidth) >=
       MIN_MEANINGFUL_INTERVAL_WIDTH
   );
-  const parentContextSummary = contextTrackSummary(swimlane.contextTrack);
+  const parentContextSummary = contextStripsVisible
+    ? contextTrackSummary(swimlane.contextTrack)
+    : undefined;
   const hitlLayout = layoutHitlMarks(
     swimlane.hitlMarks,
     axisStart,
@@ -2154,6 +2158,16 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         >
           {zoomPercent}%
         </output>
+        <button
+          type="button"
+          aria-label="Show context heat strips"
+          aria-pressed={contextStripsVisible}
+          className={zoomButtonClassName}
+          data-testid="swimlane-context-toggle"
+          onClick={() => setContextStripsVisible((visible) => !visible)}
+        >
+          Context heat
+        </button>
       </div>
       <span className="sr-only" id={rulerDescriptionId}>
         Use the keyboard or native scrollbars to navigate the timeline. Drag the elapsed-time ruler
@@ -2417,7 +2431,9 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                 >
                   <div aria-hidden="true" style={baseTrackStyle} />
                   {row.activations.map((activation) => {
-                    const activationContextSummary = contextTrackSummary(activation.contextTrack);
+                    const activationContextSummary = contextStripsVisible
+                      ? contextTrackSummary(activation.contextTrack)
+                      : undefined;
                     // A continuation gap belongs to no activation, so it stays bare.
                     if (!activationContextSummary) return null;
                     return (
