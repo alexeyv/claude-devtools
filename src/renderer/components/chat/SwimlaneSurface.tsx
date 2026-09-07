@@ -2416,6 +2416,21 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                   style={clockStyle}
                 >
                   <div aria-hidden="true" style={baseTrackStyle} />
+                  {row.activations.map((activation) => {
+                    const activationContextSummary = contextTrackSummary(activation.contextTrack);
+                    // A continuation gap belongs to no activation, so it stays bare.
+                    if (!activationContextSummary) return null;
+                    return (
+                      <ContextHeatStrip
+                        key={`context-${activation.id}`}
+                        track={activation.contextTrack}
+                        axisStart={axisStart}
+                        axisDuration={axisDuration}
+                        ariaLabel={`${row.label} ${activationContextSummary}`}
+                        testId={`swimlane-context-strip-${activation.id}`}
+                      />
+                    );
+                  })}
                   {row.activations
                     .filter(
                       (activation) =>

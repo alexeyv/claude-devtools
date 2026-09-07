@@ -2593,6 +2593,67 @@ describe('SwimlaneSurface', () => {
     expect(host.querySelector('[data-testid="swimlane-context-strip-parent"]')).toBeNull();
   });
 
+  it('draws one context strip per child activation and leaves continuation gaps bare', async () => {
+    const model = mixedModel();
+    const [childRow, nestedRow] = model.childRows;
+    childRow.activations[0].contextTrack = [
+      { startTime: at(1), endTime: at(3), startTokens: 20_000, endTokens: 26_000 },
+    ];
+    childRow.activations[1].contextTrack = [
+      { startTime: at(8), endTime: at(9), startTokens: 60_000, endTokens: 60_000 },
+    ];
+    // A usage-free activation carries an empty track and draws nothing.
+    nestedRow.activations[0].contextTrack = [];
+    const host = await render(model);
+
+    const childClock = element(host, 'swimlane-child-clock-child');
+    const first = element(host, 'swimlane-context-strip-child-first');
+    const continuation = element(host, 'swimlane-context-strip-child-continuation');
+    expect(childClock.contains(first)).toBe(true);
+    expect(childClock.contains(continuation)).toBe(true);
+    expect(first.getAttribute('aria-label')).toBe(
+      'Child agent context from 20.0k to 26.0k tokens, peak 26.0k'
+    );
+    expect(continuation.getAttribute('aria-label')).toBe(
+      'Child agent context from 60.0k to 60.0k tokens, peak 60.0k'
+    );
+    expect(
+      host.querySelector('[data-testid="swimlane-context-strip-nested-activation"]')
+    ).toBeNull();
+
+    // Each strip covers only its own activation, so 3s-8s stays uncovered.
+    const firstInterval = element(host, 'swimlane-context-strip-child-first-interval-0');
+    const continuationInterval = element(
+      host,
+      'swimlane-context-strip-child-continuation-interval-0'
+    );
+    expect(firstInterval.style.left).toBe('10%');
+    expect(firstInterval.style.width).toBe('20%');
+    expect(continuationInterval.style.left).toBe('80%');
+    expect(continuationInterval.style.width).toBe('10%');
+    expect(continuationInterval.style.backgroundColor).toBe(contextHeatColor(60_000));
+  });
+
+  it('scales child context strips with the clock and leaves bar geometry untouched', async () => {
+    const model = mixedModel();
+    model.childRows[0].activations[0].contextTrack = [
+      { startTime: at(1), endTime: at(3), startTokens: 20_000, endTokens: 26_000 },
+    ];
+    const host = await render(model);
+    const barLeft = element(host, 'swimlane-activation-child-first').style.left;
+    const barWidth = element(host, 'swimlane-activation-child-first').style.width;
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 3);
+
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('800%');
+    expect(element(host, 'swimlane-activation-child-first').style.left).toBe(barLeft);
+    expect(element(host, 'swimlane-activation-child-first').style.width).toBe(barWidth);
+    const strip = element(host, 'swimlane-context-strip-child-first-interval-0');
+    expect(strip.style.left).toBe('10%');
+    expect(strip.style.width).toBe('20%');
+    expect(element(host, 'swimlane-context-strip-child-first').style.height).toBe('4px');
+  });
+
   it('renders a useful parent-only clock with boundaries and no empty-state substitution', async () => {
     const model = mixedModel();
     model.childRows = [];
