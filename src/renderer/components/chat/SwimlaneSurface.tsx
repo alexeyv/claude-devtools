@@ -13,10 +13,8 @@ import { createPortal } from 'react-dom';
 
 import { formatDuration } from '@renderer/utils/formatters';
 import {
-  CONTEXT_HEAT_MAX_TOKENS,
-  CONTEXT_HEAT_MIN_TOKENS,
   contextHeatBackground,
-  contextHeatColor,
+  contextHeatLegendGradient,
   contextSizeAt,
   contextTrackSummary,
 } from '@renderer/utils/swimlaneContextHeat';
@@ -2284,9 +2282,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
             <span
               aria-hidden="true"
               style={{
-                backgroundImage: `linear-gradient(90deg, ${contextHeatColor(
-                  CONTEXT_HEAT_MIN_TOKENS
-                )} 0%, ${contextHeatColor(CONTEXT_HEAT_MAX_TOKENS)} 100%)`,
+                backgroundImage: contextHeatLegendGradient(),
                 borderRadius: '2px',
                 display: 'inline-block',
                 height: `${CONTEXT_STRIP_HEIGHT}px`,

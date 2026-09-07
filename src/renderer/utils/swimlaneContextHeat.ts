@@ -4,7 +4,8 @@
  * A lane's context size is mapped onto one fixed cold-to-burning ramp so that
  * every lane, at every zoom, reads on the same absolute scale:
  * `CONTEXT_HEAT_MIN_TOKENS` and below is the cold end and
- * `CONTEXT_HEAT_MAX_TOKENS` and above the burning end. The floor sits where a
+ * `CONTEXT_HEAT_MAX_TOKENS` and above the burning end, logarithmic in between
+ * so a doubling anywhere reads as the same change. The floor sits where a
  * real session starts, since system prompt and tool schemas alone put every
  * request above it, so the ramp spends no colour on sizes no lane ever has.
  */
@@ -46,10 +47,27 @@ const RAMP_STOPS: readonly RampStop[] = [
   { position: 1, rgb: [255, 132, 30] },
 ];
 
+/**
+ * Position on the ramp, logarithmic in tokens: the floor to the ceiling is one
+ * decade, so every doubling of context moves the same distance along the ramp
+ * and the sizes a session lives at get as much colour as the sizes it ends at.
+ */
 function clampRampPosition(tokens: number): number {
   if (!Number.isFinite(tokens) || tokens <= CONTEXT_HEAT_MIN_TOKENS) return 0;
   if (tokens >= CONTEXT_HEAT_MAX_TOKENS) return 1;
-  return (tokens - CONTEXT_HEAT_MIN_TOKENS) / (CONTEXT_HEAT_MAX_TOKENS - CONTEXT_HEAT_MIN_TOKENS);
+  return (
+    Math.log(tokens / CONTEXT_HEAT_MIN_TOKENS) /
+    Math.log(CONTEXT_HEAT_MAX_TOKENS / CONTEXT_HEAT_MIN_TOKENS)
+  );
+}
+
+/** The whole ramp as a CSS gradient, every stop at its place, for the legend. */
+export function contextHeatLegendGradient(): string {
+  const stops = RAMP_STOPS.map(
+    ({ position, rgb: [red, green, blue] }) =>
+      `rgb(${red}, ${green}, ${blue}) ${Math.round(position * 100)}%`
+  );
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
 }
 
 /** The ramp colour for a context size, clamped at the ramp's minimum and maximum. */

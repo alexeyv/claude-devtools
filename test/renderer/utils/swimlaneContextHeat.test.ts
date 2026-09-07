@@ -77,19 +77,29 @@ describe('swimlaneContextHeat', () => {
     });
 
     it('interpolates between the stops it passes through', () => {
-      expect(contextHeatColor(50_000)).toBe('rgb(40, 159, 171)');
-      expect(contextHeatColor(110_000)).toBe('rgb(120, 163, 100)');
+      expect(contextHeatColor(40_000)).toBe('rgb(68, 163, 142)');
+      expect(contextHeatColor(110_000)).toBe('rgb(192, 149, 59)');
+    });
+
+    it('is logarithmic: each doubling moves the same three tenths of the ramp', () => {
+      expect(contextHeatColor(2 * CONTEXT_HEAT_MIN_TOKENS)).toBe('rgb(68, 163, 142)');
+      expect(contextHeatColor(4 * CONTEXT_HEAT_MIN_TOKENS)).toBe('rgb(151, 160, 80)');
+      expect(contextHeatColor(8 * CONTEXT_HEAT_MIN_TOKENS)).toBe('rgb(233, 138, 40)');
+      expect(contextHeatColor(4 * CONTEXT_HEAT_MIN_TOKENS)).not.toBe(
+        contextHeatColor(3 * CONTEXT_HEAT_MIN_TOKENS)
+      );
     });
 
     it('keeps the middle of the ramp cool: halfway up is not yet amber', () => {
-      const [red, green] = channels(contextHeatColor(110_000));
+      const halfway = Math.round(Math.sqrt(CONTEXT_HEAT_MIN_TOKENS * CONTEXT_HEAT_MAX_TOKENS));
+      const [red, green] = channels(contextHeatColor(halfway));
       expect(green).toBeGreaterThan(red);
     });
 
     it('burns brightest at the maximum: no stop outshines the hot end', () => {
-      const span = CONTEXT_HEAT_MAX_TOKENS - CONTEXT_HEAT_MIN_TOKENS;
+      const decade = CONTEXT_HEAT_MAX_TOKENS / CONTEXT_HEAT_MIN_TOKENS;
       const stopLuminances = [0, 0.17, 0.4, 0.6, 0.8, 1].map((position) =>
-        relativeLuminance(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS + position * span))
+        relativeLuminance(contextHeatColor(CONTEXT_HEAT_MIN_TOKENS * decade ** position))
       );
       const hottest = stopLuminances[stopLuminances.length - 1];
 

@@ -7,9 +7,8 @@ import {
   normalizeContextTrack,
 } from '../../../../src/renderer/components/chat/SwimlaneSurface';
 import {
-  CONTEXT_HEAT_MAX_TOKENS,
-  CONTEXT_HEAT_MIN_TOKENS,
   contextHeatColor,
+  contextHeatLegendGradient,
 } from '../../../../src/renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
 
@@ -2795,11 +2794,8 @@ describe('SwimlaneSurface', () => {
     ).toBe(legend);
     expect(legend.textContent).toBe('20k200k+');
     const ramp = legend.querySelector<HTMLElement>('[aria-hidden="true"]');
-    expect(ramp?.style.backgroundImage).toBe(
-      `linear-gradient(90deg, ${contextHeatColor(CONTEXT_HEAT_MIN_TOKENS)} 0%, ${contextHeatColor(
-        CONTEXT_HEAT_MAX_TOKENS
-      )} 100%)`
-    );
+    expect(ramp?.style.backgroundImage).toBe(contextHeatLegendGradient());
+    expect(contextHeatLegendGradient().split(',').length).toBeGreaterThan(3);
 
     await click(element(host, 'swimlane-context-toggle'));
 
