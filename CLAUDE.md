@@ -156,3 +156,22 @@ Note: renderer utils/hooks/types do NOT have barrel exports — import directly 
 1. External packages
 2. Path aliases (@main, @renderer, @shared)
 3. Relative imports
+
+## Policy
+
+- Conventional commits; subject line at most 72 characters.
+- Never push.
+
+## Quality gate
+
+Run from the repository root, in this order:
+
+```sh
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm test
+```
+
+Every failing check is a show stopper. Fix or escalate, never ignore. `pnpm format`
+fixes formatting.
