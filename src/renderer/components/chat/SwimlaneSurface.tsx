@@ -11,7 +11,12 @@ import {
 import { createPortal } from 'react-dom';
 
 import { formatDuration } from '@renderer/utils/formatters';
-import { contextHeatBackground, contextTrackSummary } from '@renderer/utils/swimlaneContextHeat';
+import {
+  CONTEXT_HEAT_MAX_TOKENS,
+  contextHeatBackground,
+  contextHeatColor,
+  contextTrackSummary,
+} from '@renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '@shared/types';
 
 import type {
@@ -2083,7 +2088,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
       }}
     >
       <div
-        aria-label="Swimlane horizontal zoom"
+        aria-label="Swimlane view controls"
         data-testid="swimlane-zoom-controls"
         role="group"
         style={{
@@ -2168,6 +2173,34 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         >
           Context heat
         </button>
+        {contextStripsVisible && (
+          <span
+            data-testid="swimlane-context-legend"
+            style={{
+              alignItems: 'center',
+              color: 'var(--color-text-muted)',
+              display: 'inline-flex',
+              flex: '0 0 auto',
+              gap: '4px',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span>0</span>
+            <span
+              aria-hidden="true"
+              style={{
+                backgroundImage: `linear-gradient(90deg, ${contextHeatColor(0)} 0%, ${contextHeatColor(
+                  CONTEXT_HEAT_MAX_TOKENS
+                )} 100%)`,
+                borderRadius: '2px',
+                display: 'inline-block',
+                height: `${CONTEXT_STRIP_HEIGHT}px`,
+                width: '48px',
+              }}
+            />
+            <span>200k+</span>
+          </span>
+        )}
       </div>
       <span className="sr-only" id={rulerDescriptionId}>
         Use the keyboard or native scrollbars to navigate the timeline. Drag the elapsed-time ruler

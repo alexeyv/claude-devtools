@@ -6,7 +6,10 @@ import {
   SwimlaneSurface,
   normalizeContextTrack,
 } from '../../../../src/renderer/components/chat/SwimlaneSurface';
-import { contextHeatColor } from '../../../../src/renderer/utils/swimlaneContextHeat';
+import {
+  CONTEXT_HEAT_MAX_TOKENS,
+  contextHeatColor,
+} from '../../../../src/renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
 
 import type {
@@ -2692,6 +2695,32 @@ describe('SwimlaneSurface', () => {
       (element(host, 'swimlane-context-toggle') as HTMLButtonElement).getAttribute('aria-pressed')
     ).toBe('true');
     expect(strips()).toBe(3);
+  });
+
+  it('shows the ramp legend beside the toggle while the strips are on', async () => {
+    const host = await render(mixedModel());
+
+    const controls = element(host, 'swimlane-zoom-controls');
+    expect(controls.getAttribute('aria-label')).toBe('Swimlane view controls');
+    const legend = element(host, 'swimlane-context-legend');
+    expect(controls.contains(legend)).toBe(true);
+    expect(legend.getAttribute('aria-hidden')).toBeNull();
+    expect(legend.textContent).toBe('0200k+');
+    const ramp = legend.querySelector<HTMLElement>('[aria-hidden="true"]');
+    expect(ramp?.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(0)} 0%, ${contextHeatColor(
+        CONTEXT_HEAT_MAX_TOKENS
+      )} 100%)`
+    );
+
+    await click(element(host, 'swimlane-context-toggle'));
+
+    expect(host.querySelector('[data-testid="swimlane-context-legend"]')).toBeNull();
+    expect(element(host, 'swimlane-zoom-fit')).toBeTruthy();
+
+    await click(element(host, 'swimlane-context-toggle'));
+
+    expect(element(host, 'swimlane-context-legend').textContent).toBe('0200k+');
   });
 
   it('renders a useful parent-only clock with boundaries and no empty-state substitution', async () => {
