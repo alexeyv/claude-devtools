@@ -173,7 +173,11 @@ export interface SwimlaneChildActivation {
   evidence?: SwimlaneEvidenceInterval[];
   /** Classified slices partitioning this activation without crossing continuation gaps. */
   segments?: SwimlaneChildSegment[];
-  /** Context-window size across this activation, from its own assistant usage. */
+  /**
+   * Context-window size across this activation, from its own assistant usage.
+   * Always emitted by the builder, an empty array when the activation has no
+   * usage; optional only so existing fixtures keep compiling.
+   */
   contextTrack?: SwimlaneContextInterval[];
   /** Existing root-session SubagentItem destination, when one is known exactly. */
   target?: SwimlaneNavigationTarget;
@@ -199,7 +203,11 @@ export interface SwimlaneModel {
   parentSegments: SwimlaneParentSegment[];
   hitlMarks: SwimlaneHitlMark[];
   childRows: SwimlaneChildRow[];
-  /** Context-window size across the parent lane, empty when the lane has no usage. */
+  /**
+   * Context-window size across the parent lane. Always emitted by the builder,
+   * an empty array when the lane has no usage; optional only so existing
+   * fixtures keep compiling.
+   */
   contextTrack?: SwimlaneContextInterval[];
 }
 

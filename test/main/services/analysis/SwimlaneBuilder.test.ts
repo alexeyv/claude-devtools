@@ -403,6 +403,68 @@ describe('buildSwimlane', () => {
     ]);
   });
 
+  it('tracks each child activation from its own usage and leaves a usage-free child bare', () => {
+    const spawn = spawnCall('tracked-child');
+    const quietSpawn = spawnCall('quiet-child');
+    const child = process('tracked-process', 1, 3, {
+      parentTaskId: spawn.id,
+      messages: [
+        message('child-one-stream', 1, { isSidechain: true, requestId: 'child-one' }),
+        message('child-one-final', 2, {
+          isSidechain: true,
+          requestId: 'child-one',
+          usage: {
+            input_tokens: 800,
+            output_tokens: 100,
+            cache_read_input_tokens: 100,
+            cache_creation_input_tokens: 100,
+          },
+        }),
+        message('child-two-stream', 2.5, { isSidechain: true, requestId: 'child-two' }),
+        message('child-two-final', 3, {
+          isSidechain: true,
+          requestId: 'child-two',
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 50,
+            cache_read_input_tokens: 200,
+            cache_creation_input_tokens: 0,
+          },
+        }),
+      ],
+    });
+    const quiet = process('quiet-process', 4, 6, {
+      parentTaskId: quietSpawn.id,
+      messages: [message('quiet-request', 5, { isSidechain: true, requestId: 'quiet-one' })],
+    });
+
+    const model = buildSwimlane(
+      [],
+      [child, quiet],
+      [
+        message('spawn-calls', 0, { requestId: 'spawn-request', toolCalls: [spawn, quietSpawn] }),
+        message('spawn-results', 7, {
+          type: 'user',
+          isMeta: true,
+          sourceToolUseID: spawn.id,
+          toolResults: [
+            { toolUseId: spawn.id, content: 'done', isError: false },
+            { toolUseId: quietSpawn.id, content: 'done', isError: false },
+          ],
+        }),
+      ]
+    );
+    const activation = model.childRows.find((row) => row.id === child.id)?.activations[0];
+    const quietActivation = model.childRows.find((row) => row.id === quiet.id)?.activations[0];
+
+    expect(activation?.contextTrack).toEqual([
+      { startTime: at(1), endTime: at(2), startTokens: 1000, endTokens: 1100 },
+      { startTime: at(2), endTime: at(2.5), startTokens: 1100, endTokens: 1100 },
+      { startTime: at(2.5), endTime: at(3), startTokens: 1400, endTokens: 1450 },
+    ]);
+    expect(quietActivation?.contextTrack).toEqual([]);
+  });
+
   it('attributes linked child activity once while retaining the exact enclosing tool span', () => {
     const spawn = spawnCall('linked-child');
     const child = process('linked-process', 1, 3, { parentTaskId: spawn.id });

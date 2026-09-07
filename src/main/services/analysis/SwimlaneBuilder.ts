@@ -618,6 +618,7 @@ function buildChildRows(
           metrics: { ...process.metrics },
           evidence: evidenceRanges.map(serializeEvidence),
           segments: buildSegments(range.start, range.end, evidenceRanges, requestRanges, target),
+          contextTrack: buildContextTrack(requestRanges),
           target,
         };
       }),
