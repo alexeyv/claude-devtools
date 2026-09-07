@@ -74,7 +74,7 @@ export interface Process {
 // =============================================================================
 
 /** Current IPC schema for the evidence-backed swimlane projection. */
-export const SWIMLANE_SCHEMA_VERSION = 2 as const;
+export const SWIMLANE_SCHEMA_VERSION = 3 as const;
 
 /** Evidence-based classification for every interval on the parent lane. */
 export type SwimlaneSegmentType =
@@ -138,6 +138,20 @@ export interface SwimlaneParentSegment {
 /** A classified slice inside one physical child activation. */
 export type SwimlaneChildSegment = SwimlaneParentSegment;
 
+/**
+ * One abutting slice of a lane's context-window size over wall time.
+ *
+ * Equal token counts describe a flat interval; different counts describe a
+ * request's generation, rising from start to end. Neighbouring intervals whose
+ * counts disagree at the shared boundary are a step.
+ */
+export interface SwimlaneContextInterval {
+  startTime: Date;
+  endTime: Date;
+  startTokens: number;
+  endTokens: number;
+}
+
 /** A labeled boundary for explicit AskUserQuestion or inferred resume waits. */
 export interface SwimlaneHitlMark {
   id: string;
@@ -159,6 +173,8 @@ export interface SwimlaneChildActivation {
   evidence?: SwimlaneEvidenceInterval[];
   /** Classified slices partitioning this activation without crossing continuation gaps. */
   segments?: SwimlaneChildSegment[];
+  /** Context-window size across this activation, from its own assistant usage. */
+  contextTrack?: SwimlaneContextInterval[];
   /** Existing root-session SubagentItem destination, when one is known exactly. */
   target?: SwimlaneNavigationTarget;
 }
@@ -183,6 +199,8 @@ export interface SwimlaneModel {
   parentSegments: SwimlaneParentSegment[];
   hitlMarks: SwimlaneHitlMark[];
   childRows: SwimlaneChildRow[];
+  /** Context-window size across the parent lane, empty when the lane has no usage. */
+  contextTrack?: SwimlaneContextInterval[];
 }
 
 // =============================================================================
