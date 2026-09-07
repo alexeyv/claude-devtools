@@ -2,7 +2,10 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SwimlaneSurface } from '../../../../src/renderer/components/chat/SwimlaneSurface';
+import {
+  SwimlaneSurface,
+  normalizeContextTrack,
+} from '../../../../src/renderer/components/chat/SwimlaneSurface';
 import { SWIMLANE_SCHEMA_VERSION } from '../../../../src/main/types';
 
 import type {
@@ -2467,7 +2470,9 @@ describe('SwimlaneSurface', () => {
     ];
     const host = await render(model);
 
-    expect(element(host, 'swimlane-parent-segment-span-duration').dataset.labelVisible).toBe('true');
+    expect(element(host, 'swimlane-parent-segment-span-duration').dataset.labelVisible).toBe(
+      'true'
+    );
     expect(element(host, 'swimlane-mark-over-ask').dataset.labelVisible).toBe('true');
     // The tick itself survives; only its label is dropped.
     expect(element(host, 'swimlane-mark-over-resume')).toBeTruthy();
@@ -2524,6 +2529,18 @@ describe('SwimlaneSurface', () => {
     expect(element(document, 'swimlane-tooltip').textContent).toContain('Cache write30');
   });
 
+  it('survives an unusable context track on the model and on an activation', async () => {
+    const model = mixedModel() as SwimlaneModel & { contextTrack?: unknown };
+    model.contextTrack = 'not a track';
+    (model.childRows[0].activations[0] as { contextTrack?: unknown }).contextTrack = [
+      { startTime: 'nonsense', endTime: at(2), startTokens: 1, endTokens: 2 },
+    ];
+    const host = await render(model);
+
+    expect(element(host, 'swimlane-parent-row')).toBeTruthy();
+    expect(element(host, 'swimlane-child-row-child')).toBeTruthy();
+  });
+
   it('renders a useful parent-only clock with boundaries and no empty-state substitution', async () => {
     const model = mixedModel();
     model.childRows = [];
@@ -2535,5 +2552,66 @@ describe('SwimlaneSurface', () => {
     expect(host.querySelector('[data-testid^="swimlane-child-row-"]')).toBeNull();
     expect(host.querySelector('img, svg')).toBeNull();
     expect(host.textContent).not.toContain('No children');
+  });
+});
+
+describe('normalizeContextTrack', () => {
+  const rangeStart = at(0).getTime();
+  const rangeEnd = at(10).getTime();
+
+  function interval(
+    startSeconds: number,
+    endSeconds: number,
+    startTokens: number,
+    endTokens: number
+  ): unknown {
+    return { startTime: at(startSeconds), endTime: at(endSeconds), startTokens, endTokens };
+  }
+
+  it('drops anything that is not a usable interval', () => {
+    expect(normalizeContextTrack(undefined, rangeStart, rangeEnd)).toEqual([]);
+    expect(normalizeContextTrack('track', rangeStart, rangeEnd)).toEqual([]);
+    expect(
+      normalizeContextTrack(
+        [
+          null,
+          'interval',
+          { startTime: 'not a time', endTime: at(2), startTokens: 1, endTokens: 2 },
+          { startTime: at(1), endTime: at(2), startTokens: Number.NaN, endTokens: 2 },
+          { startTime: at(1), endTime: at(2), startTokens: 1, endTokens: Number.POSITIVE_INFINITY },
+          { startTime: at(1), endTime: at(2), startTokens: 1 },
+          interval(4, 3, 10, 20),
+        ],
+        rangeStart,
+        rangeEnd
+      )
+    ).toEqual([]);
+  });
+
+  it('clips to the range, interpolates the clipped token endpoints, and sorts by start', () => {
+    expect(
+      normalizeContextTrack(
+        [
+          interval(6, 14, 4000, 8000),
+          { startTime: at(-2, true), endTime: at(2, true), startTokens: 1000, endTokens: 2000 },
+          interval(2, 6, 2000, 2000),
+        ],
+        rangeStart,
+        rangeEnd
+      )
+    ).toEqual([
+      { startTime: at(0), endTime: at(2), startTokens: 1500, endTokens: 2000 },
+      { startTime: at(2), endTime: at(6), startTokens: 2000, endTokens: 2000 },
+      { startTime: at(6), endTime: at(10), startTokens: 4000, endTokens: 6000 },
+    ]);
+  });
+
+  it('keeps an instant inside the range, drops one outside it and everything past a closed range', () => {
+    expect(normalizeContextTrack([interval(3, 3, 900, 900)], rangeStart, rangeEnd)).toEqual([
+      { startTime: at(3), endTime: at(3), startTokens: 900, endTokens: 900 },
+    ]);
+    expect(normalizeContextTrack([interval(12, 12, 900, 900)], rangeStart, rangeEnd)).toEqual([]);
+    expect(normalizeContextTrack([interval(1, 2, 900, 950)], rangeEnd, rangeStart)).toEqual([]);
+    expect(normalizeContextTrack([interval(11, 12, 900, 950)], rangeStart, rangeEnd)).toEqual([]);
   });
 });

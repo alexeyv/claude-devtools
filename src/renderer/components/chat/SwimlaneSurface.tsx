@@ -15,6 +15,9 @@ import { SWIMLANE_SCHEMA_VERSION } from '@shared/types';
 
 import type {
   SessionMetrics,
+  SwimlaneChildActivation,
+  SwimlaneChildRow,
+  SwimlaneContextInterval,
   SwimlaneHitlMark,
   SwimlaneModel,
   SwimlaneNavigationTarget,
@@ -75,6 +78,25 @@ const EVIDENCE_TYPES = [
 ] as const;
 const PARENT_TYPES = [...EVIDENCE_TYPES, 'unattributed'] as const;
 
+/** One activation whose context track the normalizer has already guaranteed. */
+type NormalizedChildActivation = SwimlaneChildActivation & {
+  contextTrack: SwimlaneContextInterval[];
+};
+
+type NormalizedChildRow = Omit<SwimlaneChildRow, 'activations'> & {
+  activations: NormalizedChildActivation[];
+};
+
+/**
+ * The projection the surface actually renders: every lane carries a context
+ * track, empty when that lane has no usage, so render code never branches on
+ * absence.
+ */
+type NormalizedSwimlaneModel = Omit<SwimlaneModel, 'childRows' | 'contextTrack'> & {
+  childRows: NormalizedChildRow[];
+  contextTrack: SwimlaneContextInterval[];
+};
+
 interface SwimlaneSurfaceProps {
   swimlane: SwimlaneModel;
   onTarget?: (target: SwimlaneNavigationTarget) => void;
@@ -84,6 +106,11 @@ interface SwimlaneSurfaceProps {
    * model object keep that state; when omitted, a new model object remounts.
    */
   resetKey?: string;
+}
+
+interface SwimlaneContentProps {
+  swimlane: NormalizedSwimlaneModel;
+  onTarget?: (target: SwimlaneNavigationTarget) => void;
 }
 
 interface IntervalDetails {
@@ -227,6 +254,70 @@ function clippedInterval(
   return { startTime: new Date(start), endTime: new Date(end), durationMs: end - start };
 }
 
+/**
+ * Validate and clip one lane's context track to the range it is drawn in,
+ * interpolating the token endpoints of any interval the clip shortens.
+ *
+ * Exported for direct testing; the surface reaches it through
+ * `normalizeSwimlaneModel`.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper kept beside clippedInterval, exported for its own tests
+export function normalizeContextTrack(
+  value: unknown,
+  rangeStart: number,
+  rangeEnd: number
+): SwimlaneContextInterval[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .flatMap((entry): SwimlaneContextInterval[] => {
+      const candidate = runtimeRecord(entry);
+      if (!candidate) return [];
+      const rawStart = runtimeTimestamp(candidate.startTime);
+      const rawEnd = runtimeTimestamp(candidate.endTime);
+      const rawStartTokens = finiteNumber(candidate.startTokens);
+      const rawEndTokens = finiteNumber(candidate.endTokens);
+      if (
+        rawStart === undefined ||
+        rawEnd === undefined ||
+        rawEndTokens === undefined ||
+        rawStartTokens === undefined ||
+        rawEnd < rawStart
+      ) {
+        return [];
+      }
+      if (rawStart === rawEnd) {
+        return rawStart >= rangeStart && rawStart <= rangeEnd
+          ? [
+              {
+                startTime: new Date(rawStart),
+                endTime: new Date(rawEnd),
+                startTokens: rawStartTokens,
+                endTokens: rawEndTokens,
+              },
+            ]
+          : [];
+      }
+      if (rangeEnd <= rangeStart) return [];
+      const start = Math.max(rangeStart, rawStart);
+      const end = Math.min(rangeEnd, rawEnd);
+      if (end <= start) return [];
+      const tokensAt = (instant: number): number =>
+        Math.round(
+          rawStartTokens +
+            ((rawEndTokens - rawStartTokens) * (instant - rawStart)) / (rawEnd - rawStart)
+        );
+      return [
+        {
+          startTime: new Date(start),
+          endTime: new Date(end),
+          startTokens: tokensAt(start),
+          endTokens: tokensAt(end),
+        },
+      ];
+    })
+    .sort((left, right) => left.startTime.getTime() - right.startTime.getTime());
+}
+
 function isParentType(value: unknown): value is SwimlaneParentSegment['type'] {
   return typeof value === 'string' && (PARENT_TYPES as readonly string[]).includes(value);
 }
@@ -241,7 +332,7 @@ function normalizedParentType(value: unknown, legacy: boolean): SwimlaneParentSe
 }
 
 /** Convert stale or partial IPC data into the renderer's current, safe projection. */
-function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
+function normalizeSwimlaneModel(swimlaneValue: unknown): NormalizedSwimlaneModel {
   const model = runtimeRecord(swimlaneValue) ?? {};
   const rawStart = runtimeTimestamp(model.startTime);
   const rawEnd = runtimeTimestamp(model.endTime);
@@ -367,122 +458,125 @@ function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
     }
   );
   const childRows = (Array.isArray(model.childRows) ? model.childRows : []).flatMap(
-    (rowValue, rowIndex): SwimlaneModel['childRows'] => {
+    (rowValue, rowIndex): NormalizedChildRow[] => {
       const candidate = runtimeRecord(rowValue);
       if (!candidate) return [];
       const activations = (
         Array.isArray(candidate.activations) ? candidate.activations : []
-      ).flatMap(
-        (activationValue, activationIndex): SwimlaneModel['childRows'][number]['activations'] => {
-          const activation = runtimeRecord(activationValue);
-          if (!activation) return [];
-          const interval = clippedInterval(activation, axisStart, axisEnd);
-          if (!interval) return [];
-          const metrics = runtimeMetrics(activation.metrics);
-          const target = runtimeTarget(activation.target);
-          const activationStart = interval.startTime.getTime();
-          const activationEnd = interval.endTime.getTime();
-          const childEvidenceIdMap = new Map<string, string>();
-          const childEvidence = Array.isArray(activation.evidence)
-            ? activation.evidence.flatMap((evidenceValue, evidenceIndex) => {
-                const childEvidenceCandidate = runtimeRecord(evidenceValue);
-                if (!childEvidenceCandidate || !isEvidenceType(childEvidenceCandidate.type)) {
-                  return [];
-                }
-                const evidenceInterval = clippedInterval(
-                  childEvidenceCandidate,
-                  activationStart,
-                  activationEnd
-                );
-                if (!evidenceInterval) return [];
-                const evidenceMetrics = runtimeMetrics(childEvidenceCandidate.metrics);
-                const rawEvidenceId = runtimeNonblankString(childEvidenceCandidate.id);
-                const normalizedEvidenceId = uniqueRuntimeId(
-                  rawEvidenceId,
-                  `child-evidence-${rowIndex}-${activationIndex}-${evidenceIndex}`,
-                  childEvidenceIds
-                );
-                if (rawEvidenceId && !childEvidenceIdMap.has(rawEvidenceId)) {
-                  childEvidenceIdMap.set(rawEvidenceId, normalizedEvidenceId);
-                }
-                return [
-                  {
-                    id: normalizedEvidenceId,
-                    type: childEvidenceCandidate.type,
-                    ...evidenceInterval,
-                    ...(typeof childEvidenceCandidate.requestId === 'string'
-                      ? { requestId: childEvidenceCandidate.requestId }
-                      : {}),
-                    ...(typeof childEvidenceCandidate.toolUseId === 'string'
-                      ? { toolUseId: childEvidenceCandidate.toolUseId }
-                      : {}),
-                    ...(typeof childEvidenceCandidate.processId === 'string'
-                      ? { processId: childEvidenceCandidate.processId }
-                      : {}),
-                    ...(typeof childEvidenceCandidate.startMessageId === 'string'
-                      ? { startMessageId: childEvidenceCandidate.startMessageId }
-                      : {}),
-                    ...(typeof childEvidenceCandidate.endMessageId === 'string'
-                      ? { endMessageId: childEvidenceCandidate.endMessageId }
-                      : {}),
-                    ...(typeof childEvidenceCandidate.label === 'string'
-                      ? { label: childEvidenceCandidate.label }
-                      : {}),
-                    ...(evidenceMetrics ? { metrics: evidenceMetrics } : {}),
-                    ...(target ? { target } : {}),
-                  },
-                ];
-              })
-            : undefined;
-          const childSegments = Array.isArray(activation.segments)
-            ? activation.segments.flatMap((segmentValue, segmentIndex) => {
-                const segment = runtimeRecord(segmentValue);
-                if (!segment || !isParentType(segment.type)) return [];
-                const segmentInterval = clippedInterval(segment, activationStart, activationEnd);
-                if (!segmentInterval) return [];
-                const segmentMetrics = runtimeMetrics(segment.metrics);
-                const rawEvidenceId = runtimeNonblankString(segment.evidenceId);
-                const evidenceId = rawEvidenceId
-                  ? (childEvidenceIdMap.get(rawEvidenceId) ?? rawEvidenceId)
-                  : undefined;
-                return [
-                  {
-                    id: uniqueRuntimeId(
-                      segment.id,
-                      `child-segment-${rowIndex}-${activationIndex}-${segmentIndex}`,
-                      childSegmentIds
-                    ),
-                    type: segment.type,
-                    ...segmentInterval,
-                    ...(evidenceId ? { evidenceId } : {}),
-                    ...(segmentMetrics ? { metrics: segmentMetrics } : {}),
-                    ...(runtimeNonblankString(segment.requestId)
-                      ? { requestId: runtimeNonblankString(segment.requestId) }
-                      : {}),
-                    ...(target ? { target } : {}),
-                  },
-                ];
-              })
-            : undefined;
-          return [
-            {
-              id: uniqueRuntimeId(
-                activation.id,
-                `activation-${rowIndex}-${activationIndex}`,
-                activationIds
-              ),
-              processId:
-                runtimeNonblankString(activation.processId) ??
-                `process-${rowIndex}-${activationIndex}`,
-              ...interval,
-              ...(metrics ? { metrics } : {}),
-              ...(childEvidence ? { evidence: childEvidence } : {}),
-              ...(childSegments && childSegments.length > 0 ? { segments: childSegments } : {}),
-              ...(target ? { target } : {}),
-            },
-          ];
-        }
-      );
+      ).flatMap((activationValue, activationIndex): NormalizedChildActivation[] => {
+        const activation = runtimeRecord(activationValue);
+        if (!activation) return [];
+        const interval = clippedInterval(activation, axisStart, axisEnd);
+        if (!interval) return [];
+        const metrics = runtimeMetrics(activation.metrics);
+        const target = runtimeTarget(activation.target);
+        const activationStart = interval.startTime.getTime();
+        const activationEnd = interval.endTime.getTime();
+        const childEvidenceIdMap = new Map<string, string>();
+        const childEvidence = Array.isArray(activation.evidence)
+          ? activation.evidence.flatMap((evidenceValue, evidenceIndex) => {
+              const childEvidenceCandidate = runtimeRecord(evidenceValue);
+              if (!childEvidenceCandidate || !isEvidenceType(childEvidenceCandidate.type)) {
+                return [];
+              }
+              const evidenceInterval = clippedInterval(
+                childEvidenceCandidate,
+                activationStart,
+                activationEnd
+              );
+              if (!evidenceInterval) return [];
+              const evidenceMetrics = runtimeMetrics(childEvidenceCandidate.metrics);
+              const rawEvidenceId = runtimeNonblankString(childEvidenceCandidate.id);
+              const normalizedEvidenceId = uniqueRuntimeId(
+                rawEvidenceId,
+                `child-evidence-${rowIndex}-${activationIndex}-${evidenceIndex}`,
+                childEvidenceIds
+              );
+              if (rawEvidenceId && !childEvidenceIdMap.has(rawEvidenceId)) {
+                childEvidenceIdMap.set(rawEvidenceId, normalizedEvidenceId);
+              }
+              return [
+                {
+                  id: normalizedEvidenceId,
+                  type: childEvidenceCandidate.type,
+                  ...evidenceInterval,
+                  ...(typeof childEvidenceCandidate.requestId === 'string'
+                    ? { requestId: childEvidenceCandidate.requestId }
+                    : {}),
+                  ...(typeof childEvidenceCandidate.toolUseId === 'string'
+                    ? { toolUseId: childEvidenceCandidate.toolUseId }
+                    : {}),
+                  ...(typeof childEvidenceCandidate.processId === 'string'
+                    ? { processId: childEvidenceCandidate.processId }
+                    : {}),
+                  ...(typeof childEvidenceCandidate.startMessageId === 'string'
+                    ? { startMessageId: childEvidenceCandidate.startMessageId }
+                    : {}),
+                  ...(typeof childEvidenceCandidate.endMessageId === 'string'
+                    ? { endMessageId: childEvidenceCandidate.endMessageId }
+                    : {}),
+                  ...(typeof childEvidenceCandidate.label === 'string'
+                    ? { label: childEvidenceCandidate.label }
+                    : {}),
+                  ...(evidenceMetrics ? { metrics: evidenceMetrics } : {}),
+                  ...(target ? { target } : {}),
+                },
+              ];
+            })
+          : undefined;
+        const childSegments = Array.isArray(activation.segments)
+          ? activation.segments.flatMap((segmentValue, segmentIndex) => {
+              const segment = runtimeRecord(segmentValue);
+              if (!segment || !isParentType(segment.type)) return [];
+              const segmentInterval = clippedInterval(segment, activationStart, activationEnd);
+              if (!segmentInterval) return [];
+              const segmentMetrics = runtimeMetrics(segment.metrics);
+              const rawEvidenceId = runtimeNonblankString(segment.evidenceId);
+              const evidenceId = rawEvidenceId
+                ? (childEvidenceIdMap.get(rawEvidenceId) ?? rawEvidenceId)
+                : undefined;
+              return [
+                {
+                  id: uniqueRuntimeId(
+                    segment.id,
+                    `child-segment-${rowIndex}-${activationIndex}-${segmentIndex}`,
+                    childSegmentIds
+                  ),
+                  type: segment.type,
+                  ...segmentInterval,
+                  ...(evidenceId ? { evidenceId } : {}),
+                  ...(segmentMetrics ? { metrics: segmentMetrics } : {}),
+                  ...(runtimeNonblankString(segment.requestId)
+                    ? { requestId: runtimeNonblankString(segment.requestId) }
+                    : {}),
+                  ...(target ? { target } : {}),
+                },
+              ];
+            })
+          : undefined;
+        return [
+          {
+            id: uniqueRuntimeId(
+              activation.id,
+              `activation-${rowIndex}-${activationIndex}`,
+              activationIds
+            ),
+            processId:
+              runtimeNonblankString(activation.processId) ??
+              `process-${rowIndex}-${activationIndex}`,
+            ...interval,
+            ...(metrics ? { metrics } : {}),
+            ...(childEvidence ? { evidence: childEvidence } : {}),
+            ...(childSegments && childSegments.length > 0 ? { segments: childSegments } : {}),
+            contextTrack: normalizeContextTrack(
+              activation.contextTrack,
+              activationStart,
+              activationEnd
+            ),
+            ...(target ? { target } : {}),
+          },
+        ];
+      });
       return [
         {
           id: uniqueRuntimeId(candidate.id, `child-${rowIndex}`, rowIds),
@@ -504,6 +598,7 @@ function normalizeSwimlaneModel(swimlaneValue: unknown): SwimlaneModel {
     parentSegments,
     hitlMarks,
     childRows,
+    contextTrack: normalizeContextTrack(model.contextTrack, axisStart, axisEnd),
   };
 }
 
@@ -1351,7 +1446,7 @@ function swimlaneModelKey(swimlane: unknown): string {
 }
 
 /* eslint-disable jsx-a11y/no-noninteractive-tabindex -- The native two-axis scroll viewport must be keyboard focusable. */
-const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneSurfaceProps): JSX.Element => {
+const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): JSX.Element => {
   const axisStart = timestamp(swimlane.startTime);
   const axisEnd = timestamp(swimlane.endTime);
   const axisDuration = Math.max(0, axisEnd - axisStart);
