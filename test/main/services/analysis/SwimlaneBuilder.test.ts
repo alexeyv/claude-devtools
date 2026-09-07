@@ -327,6 +327,82 @@ describe('buildSwimlane', () => {
     ]);
   });
 
+  it('tracks the parent context across a tool result as generation, flat, then a step up', () => {
+    const toolCall: ToolCall = {
+      id: 'read-context',
+      name: 'Read',
+      input: { file_path: '/tmp/example' },
+      isTask: false,
+    };
+    const messages = [
+      message('first-stream', 0, { requestId: 'request-one' }),
+      message('first-final', 2, {
+        requestId: 'request-one',
+        toolCalls: [toolCall],
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 150,
+          cache_read_input_tokens: 200,
+          cache_creation_input_tokens: 100,
+        },
+      }),
+      message('read-result', 3, {
+        type: 'user',
+        isMeta: true,
+        parentUuid: 'first-final',
+        toolResults: [{ toolUseId: toolCall.id, content: 'done', isError: false }],
+      }),
+      message('second-stream', 4, { requestId: 'request-two' }),
+      message('second-final', 5, {
+        requestId: 'request-two',
+        usage: {
+          input_tokens: 1500,
+          output_tokens: 50,
+          cache_read_input_tokens: 400,
+          cache_creation_input_tokens: 100,
+        },
+      }),
+    ];
+
+    const model = buildSwimlane([], [], messages);
+
+    expect(model.contextTrack).toEqual([
+      { startTime: at(0), endTime: at(2), startTokens: 1300, endTokens: 1450 },
+      { startTime: at(2), endTime: at(4), startTokens: 1450, endTokens: 1450 },
+      { startTime: at(4), endTime: at(5), startTokens: 2000, endTokens: 2050 },
+    ]);
+    expect(buildSwimlane([], [], [message('no-usage', 0)]).contextTrack).toEqual([]);
+
+    const serialized = JSON.parse(JSON.stringify(model)) as {
+      contextTrack: Array<{
+        startTime: string;
+        endTime: string;
+        startTokens: number;
+        endTokens: number;
+      }>;
+    };
+    expect(serialized.contextTrack).toEqual([
+      {
+        startTime: at(0).toISOString(),
+        endTime: at(2).toISOString(),
+        startTokens: 1300,
+        endTokens: 1450,
+      },
+      {
+        startTime: at(2).toISOString(),
+        endTime: at(4).toISOString(),
+        startTokens: 1450,
+        endTokens: 1450,
+      },
+      {
+        startTime: at(4).toISOString(),
+        endTime: at(5).toISOString(),
+        startTokens: 2000,
+        endTokens: 2050,
+      },
+    ]);
+  });
+
   it('attributes linked child activity once while retaining the exact enclosing tool span', () => {
     const spawn = spawnCall('linked-child');
     const child = process('linked-process', 1, 3, { parentTaskId: spawn.id });
@@ -1225,11 +1301,13 @@ describe('buildSwimlane', () => {
     const ownerActivation = model.childRows.find((row) => row.id === owner.id)?.activations[0];
 
     expect(
-      model.evidence.filter((evidence) => evidence.type === 'child-wait').map((evidence) => ({
-        processId: evidence.processId,
-        startTime: evidence.startTime,
-        endTime: evidence.endTime,
-      }))
+      model.evidence
+        .filter((evidence) => evidence.type === 'child-wait')
+        .map((evidence) => ({
+          processId: evidence.processId,
+          startTime: evidence.startTime,
+          endTime: evidence.endTime,
+        }))
     ).toEqual([{ processId: owner.id, startTime: at(2), endTime: at(8) }]);
     expect(
       ownerActivation?.evidence
@@ -1238,15 +1316,13 @@ describe('buildSwimlane', () => {
           processId: evidence.processId,
           startTime: evidence.startTime,
           endTime: evidence.endTime,
-      }))
+        }))
     ).toEqual([{ processId: nested.id, startTime: at(4), endTime: at(6) }]);
     const nestedWaitEvidence = ownerActivation?.evidence?.find(
       (evidence) => evidence.type === 'child-wait'
     );
     expect(
-      ownerActivation?.segments?.find(
-        (segment) => segment.evidenceId === nestedWaitEvidence?.id
-      )
+      ownerActivation?.segments?.find((segment) => segment.evidenceId === nestedWaitEvidence?.id)
     ).toMatchObject({
       type: 'child-wait',
       startTime: at(4),
@@ -1288,12 +1364,14 @@ describe('buildSwimlane', () => {
 
     expect(row.activations).toHaveLength(2);
     expect(row.activations[0].evidence?.every((evidence) => evidence.endTime <= at(2))).toBe(true);
-    expect(row.activations[1].evidence?.every((evidence) => evidence.startTime >= at(5))).toBe(true);
+    expect(row.activations[1].evidence?.every((evidence) => evidence.startTime >= at(5))).toBe(
+      true
+    );
     expect(row.activations[0].evidence?.[0].id).not.toBe(row.activations[1].evidence?.[0].id);
     expect(
-      row.activations.flatMap((activation) => activation.segments ?? []).some(
-        (segment) => segment.startTime < at(5) && segment.endTime > at(2)
-      )
+      row.activations
+        .flatMap((activation) => activation.segments ?? [])
+        .some((segment) => segment.startTime < at(5) && segment.endTime > at(2))
     ).toBe(false);
   });
 

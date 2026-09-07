@@ -18,6 +18,8 @@ import {
 } from '@main/types';
 import { calculateMetrics, getTaskCalls } from '@main/utils/jsonl';
 
+import { buildContextTrack } from './SwimlaneContextTrack';
+
 interface TimedRange {
   start: number;
   end: number;
@@ -1059,5 +1061,6 @@ export function buildSwimlane(
     parentSegments: buildSegments(axisStart, axisEnd, evidenceRanges, requestRanges),
     hitlMarks: toolAndHuman.marks,
     childRows,
+    contextTrack: buildContextTrack(requestRanges),
   };
 }
