@@ -2595,7 +2595,9 @@ describe('SwimlaneSurface', () => {
     // 5ms at the fit clock width is well under one pixel; its neighbours are wide.
     model.contextTrack = [
       { startTime: at(0), endTime: at(2), startTokens: 40_000, endTokens: 44_000 },
-      { startTime: at(2), endTime: at(2.005), startTokens: 44_000, endTokens: 90_000 },
+      // The track's peak lives only inside the sub-pixel interval; the flat
+      // interval after it starts lower, a downward step across the boundary.
+      { startTime: at(2), endTime: at(2.005), startTokens: 44_000, endTokens: 150_000 },
       { startTime: at(2.005), endTime: at(4), startTokens: 90_000, endTokens: 90_000 },
     ];
     const host = await render(model);
@@ -2605,9 +2607,10 @@ describe('SwimlaneSurface', () => {
       host.querySelector('[data-testid="swimlane-context-strip-parent-interval-1"]')
     ).toBeNull();
     expect(element(host, 'swimlane-context-strip-parent-interval-2')).toBeTruthy();
-    // The accessible name still summarises the whole track, not the drawn part.
+    // The accessible name still summarises the whole track, not the drawn part:
+    // over the drawn intervals alone the peak would read 90.0k.
     expect(element(host, 'swimlane-context-strip-parent').getAttribute('aria-label')).toBe(
-      'Parent context from 40.0k to 90.0k tokens, peak 90.0k'
+      'Parent context from 40.0k to 90.0k tokens, peak 150.0k'
     );
 
     await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 3);
@@ -2615,7 +2618,7 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-zoom-output').textContent).toBe('800%');
     const subPixel = element(host, 'swimlane-context-strip-parent-interval-1');
     expect(subPixel.style.backgroundImage).toBe(
-      `linear-gradient(90deg, ${contextHeatColor(44_000)} 0%, ${contextHeatColor(90_000)} 100%)`
+      `linear-gradient(90deg, ${contextHeatColor(44_000)} 0%, ${contextHeatColor(150_000)} 100%)`
     );
     // The wide neighbours keep their axis percentages, so nothing shifted.
     expect(element(host, 'swimlane-context-strip-parent-interval-0').style.left).toBe('0%');
