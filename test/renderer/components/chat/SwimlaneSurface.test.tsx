@@ -2590,6 +2590,39 @@ describe('SwimlaneSurface', () => {
     ).toBeNull();
   });
 
+  it('drops sub-pixel context intervals until zoom makes them wide enough', async () => {
+    const model = mixedModel();
+    // 5ms at the fit clock width is well under one pixel; its neighbours are wide.
+    model.contextTrack = [
+      { startTime: at(0), endTime: at(2), startTokens: 40_000, endTokens: 44_000 },
+      { startTime: at(2), endTime: at(2.005), startTokens: 44_000, endTokens: 90_000 },
+      { startTime: at(2.005), endTime: at(4), startTokens: 90_000, endTokens: 90_000 },
+    ];
+    const host = await render(model);
+
+    expect(element(host, 'swimlane-context-strip-parent-interval-0').style.width).toBe('20%');
+    expect(
+      host.querySelector('[data-testid="swimlane-context-strip-parent-interval-1"]')
+    ).toBeNull();
+    expect(element(host, 'swimlane-context-strip-parent-interval-2')).toBeTruthy();
+    // The accessible name still summarises the whole track, not the drawn part.
+    expect(element(host, 'swimlane-context-strip-parent').getAttribute('aria-label')).toBe(
+      'Parent context from 40.0k to 90.0k tokens, peak 90.0k'
+    );
+
+    await setRangeValue(element(host, 'swimlane-zoom-range') as HTMLInputElement, 3);
+
+    expect(element(host, 'swimlane-zoom-output').textContent).toBe('800%');
+    const subPixel = element(host, 'swimlane-context-strip-parent-interval-1');
+    expect(subPixel.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${contextHeatColor(44_000)} 0%, ${contextHeatColor(90_000)} 100%)`
+    );
+    // The wide neighbours keep their axis percentages, so nothing shifted.
+    expect(element(host, 'swimlane-context-strip-parent-interval-0').style.left).toBe('0%');
+    expect(element(host, 'swimlane-context-strip-parent-interval-0').style.width).toBe('20%');
+    expect(element(host, 'swimlane-context-strip-parent-interval-2')).toBeTruthy();
+  });
+
   it('draws no parent context strip for a lane without a track', async () => {
     const host = await render(mixedModel());
 

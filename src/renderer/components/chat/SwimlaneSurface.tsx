@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -181,6 +182,7 @@ interface ContextHeatStripProps {
   track: readonly SwimlaneContextInterval[];
   axisStart: number;
   axisDuration: number;
+  clockWidth: number;
   ariaLabel: string;
   testId: string;
 }
@@ -1222,13 +1224,14 @@ const intervalBaseStyle: CSSProperties = {
  * one colour, generation intervals a gradient, and neighbouring intervals whose
  * counts disagree meet as a hard edge.
  */
-const ContextHeatStrip = ({
+const ContextHeatStrip = memo(function ContextHeatStrip({
   track,
   axisStart,
   axisDuration,
+  clockWidth,
   ariaLabel,
   testId,
-}: Readonly<ContextHeatStripProps>): JSX.Element | null => {
+}: Readonly<ContextHeatStripProps>): JSX.Element | null {
   if (track.length === 0) return null;
   return (
     <div
@@ -1245,23 +1248,38 @@ const ContextHeatStrip = ({
         zIndex: 4,
       }}
     >
-      {track.map((interval, index) => (
-        <div
-          key={`${interval.startTime.getTime()}-${index}`}
-          aria-hidden="true"
-          data-testid={`${testId}-interval-${index}`}
-          style={{
-            ...intervalStyle(interval.startTime, interval.endTime, axisStart, axisDuration),
-            ...contextHeatBackground(interval),
-            bottom: 0,
-            position: 'absolute',
-            top: 0,
-          }}
-        />
-      ))}
+      {track.map((interval, index) => {
+        // Sub-pixel intervals are dropped like every other renderer's; absolute
+        // axis percentages place the neighbours, so nothing shifts.
+        if (
+          intervalPixelWidth(
+            interval.startTime,
+            interval.endTime,
+            axisStart,
+            axisDuration,
+            clockWidth
+          ) < MIN_MEANINGFUL_INTERVAL_WIDTH
+        ) {
+          return null;
+        }
+        return (
+          <div
+            key={`${interval.startTime.getTime()}-${index}`}
+            aria-hidden="true"
+            data-testid={`${testId}-interval-${index}`}
+            style={{
+              ...intervalStyle(interval.startTime, interval.endTime, axisStart, axisDuration),
+              ...contextHeatBackground(interval),
+              bottom: 0,
+              position: 'absolute',
+              top: 0,
+            }}
+          />
+        );
+      })}
     </div>
   );
-};
+});
 
 interface HitlLayout {
   labelLevel: number | null;
@@ -2345,6 +2363,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                   track={swimlane.contextTrack}
                   axisStart={axisStart}
                   axisDuration={axisDuration}
+                  clockWidth={clockWidth}
                   ariaLabel={`Parent ${parentContextSummary}`}
                   testId="swimlane-context-strip-parent"
                 />
@@ -2503,6 +2522,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                         track={activation.contextTrack}
                         axisStart={axisStart}
                         axisDuration={axisDuration}
+                        clockWidth={clockWidth}
                         ariaLabel={`${row.label} ${activationContextSummary}`}
                         testId={`swimlane-context-strip-${activation.id}`}
                       />
