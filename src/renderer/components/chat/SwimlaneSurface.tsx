@@ -15,9 +15,11 @@ import {
   CONTEXT_HEAT_MAX_TOKENS,
   contextHeatBackground,
   contextHeatColor,
+  contextSizeAt,
   contextTrackSummary,
 } from '@renderer/utils/swimlaneContextHeat';
 import { SWIMLANE_SCHEMA_VERSION } from '@shared/types';
+import { formatTokensCompact } from '@shared/utils/tokenFormatting';
 
 import type {
   SessionMetrics,
@@ -46,6 +48,7 @@ const RULER_HEIGHT = 28;
 const TRACK_INSET = 6;
 const CONTEXT_STRIP_HEIGHT = 4;
 const CONTEXT_STRIP_BOTTOM = TRACK_INSET + 1;
+const PARENT_LANE_ID = 'parent';
 const LABEL_HORIZONTAL_PADDING = 8;
 const MAX_VISIBLE_DEPTH = 7;
 const DEPTH_INDENT = 12;
@@ -1559,6 +1562,20 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
     }
   }
 
+  /** Every hoverable lane's context intervals, keyed by its clock region's lane id. */
+  const laneContextTracks = useMemo(() => {
+    const tracks = new Map<string, SwimlaneContextInterval[]>();
+    tracks.set(PARENT_LANE_ID, swimlane.contextTrack);
+    for (const row of swimlane.childRows) {
+      // One logical row's activations abut in time, so their tracks concatenate.
+      tracks.set(
+        row.id,
+        row.activations.flatMap((activation) => activation.contextTrack)
+      );
+    }
+    return tracks;
+  }, [swimlane]);
+
   const closeTooltip = useCallback((): void => {
     setHoveredInterval(null);
     setFocusedInterval(null);
@@ -1613,7 +1630,16 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
           ? clamp((elapsedPixel / clockRect.width) * axisDuration, 0, axisDuration)
           : 0;
       const clockResolutionMs = axisDuration > 0 ? axisDuration / clockRect.width : 1;
-      const label = formatElapsedTime(elapsedMs, clockResolutionMs);
+      const laneId = clockRegion.dataset.swimlaneLaneId;
+      const contextSize =
+        contextStripsVisible && laneId
+          ? contextSizeAt(laneContextTracks.get(laneId) ?? [], axisStart + elapsedMs)
+          : undefined;
+      const elapsedLabel = formatElapsedTime(elapsedMs, clockResolutionMs);
+      const label =
+        contextSize === undefined
+          ? elapsedLabel
+          : `${elapsedLabel} · ${formatTokensCompact(contextSize)} ctx`;
       const viewportRect = viewport.getBoundingClientRect();
       const contentLeft = viewportRect.left + viewport.clientLeft;
       const contentTop = viewportRect.top + viewport.clientTop;
@@ -1693,7 +1719,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
         labelWidth,
       });
     },
-    [axisDuration, clearHoverCursor, tooltipId]
+    [axisDuration, axisStart, clearHoverCursor, contextStripsVisible, laneContextTracks, tooltipId]
   );
 
   const recomputeStoredHoverCursor = useCallback((): void => {
@@ -2309,6 +2335,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
             <div
               data-clock-width={clockWidth}
               data-swimlane-clock-region="true"
+              data-swimlane-lane-id={PARENT_LANE_ID}
               data-testid="swimlane-parent-clock"
               style={clockStyle}
             >
@@ -2459,6 +2486,7 @@ const SwimlaneSurfaceContent = ({ swimlane, onTarget }: SwimlaneContentProps): J
                 <div
                   data-clock-width={clockWidth}
                   data-swimlane-clock-region="true"
+                  data-swimlane-lane-id={row.id}
                   data-testid={`swimlane-child-clock-${row.id}`}
                   style={clockStyle}
                 >

@@ -2723,6 +2723,76 @@ describe('SwimlaneSurface', () => {
     expect(element(host, 'swimlane-context-legend').textContent).toBe('0200k+');
   });
 
+  function hoverContextModel(): SwimlaneModel {
+    const model = mixedModel();
+    model.contextTrack = [
+      { startTime: at(0), endTime: at(2), startTokens: 40_000, endTokens: 44_000 },
+      { startTime: at(2), endTime: at(4), startTokens: 90_000, endTokens: 90_000 },
+    ];
+    const [childRow, nestedRow] = model.childRows;
+    childRow.activations[0].contextTrack = [
+      { startTime: at(1), endTime: at(3), startTokens: 20_000, endTokens: 26_000 },
+    ];
+    childRow.activations[1].contextTrack = [
+      { startTime: at(8), endTime: at(9), startTokens: 60_000, endTokens: 60_000 },
+    ];
+    nestedRow.activations[0].contextTrack = [];
+    return model;
+  }
+
+  it('adds the hovered lane context size to the elapsed cursor label', async () => {
+    const host = await render(hoverContextModel());
+
+    // 2.50s on the parent lane sits inside the flat interval after the step.
+    await pointerMove(element(host, 'swimlane-parent-clock'), 380, 50);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.50s · 90.0k ctx');
+
+    // 2.00s on the child lane interpolates inside that activation's generation.
+    await pointerMove(element(host, 'swimlane-child-clock-child'), 344, 80);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.00s · 23.0k ctx');
+
+    // The second activation's flat track resumes after the continuation gap.
+    await pointerMove(element(host, 'swimlane-child-clock-child'), 812, 80);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('8.50s · 60.0k ctx');
+  });
+
+  it('leaves the elapsed label bare off the ruler, off a track, and past a track', async () => {
+    const host = await render(hoverContextModel());
+
+    // The ruler carries no lane id.
+    await pointerMove(element(host, 'swimlane-time-ruler'), 380, 20);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.50s');
+
+    // 5.00s on the child lane falls in the continuation gap between activations.
+    await pointerMove(element(host, 'swimlane-child-clock-child'), 560, 80);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('5.00s');
+
+    // The nested lane has no usage at all.
+    await pointerMove(element(host, 'swimlane-child-clock-nested'), 344, 114);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.00s');
+
+    // 8.50s on the parent lane is past the end of its track.
+    await pointerMove(element(host, 'swimlane-parent-clock'), 812, 50);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('8.50s');
+  });
+
+  it('drops the hover context size while the strips are toggled off', async () => {
+    const host = await render(hoverContextModel());
+
+    await pointerMove(element(host, 'swimlane-parent-clock'), 380, 50);
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.50s · 90.0k ctx');
+
+    await click(element(host, 'swimlane-context-toggle'));
+    await pointerMove(element(host, 'swimlane-parent-clock'), 380, 50);
+
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.50s');
+
+    await click(element(host, 'swimlane-context-toggle'));
+    await pointerMove(element(host, 'swimlane-parent-clock'), 380, 50);
+
+    expect(element(host, 'swimlane-hover-label').textContent).toBe('2.50s · 90.0k ctx');
+  });
+
   it('renders a useful parent-only clock with boundaries and no empty-state substitution', async () => {
     const model = mixedModel();
     model.childRows = [];
